@@ -64,6 +64,9 @@ async def _deny(ctx: commands.Context, message: str) -> None:
 )
 async def dashboard(ctx: commands.Context):
     await _delete_invoking_message(ctx)
+    # Ack immédiat : l'appel vers PythonAnywhere peut dépasser les 3s
+    # tolérées par Discord avant qu'il considère l'interaction comme expirée.
+    await ctx.defer()
 
     if not db.is_authorized(ctx.author.id):
         await _deny(
@@ -89,6 +92,7 @@ async def dashboard(ctx: commands.Context):
 )
 async def admin(ctx: commands.Context):
     await _delete_invoking_message(ctx)
+    await ctx.defer()
 
     if ctx.author.id != OWNER_DISCORD_ID:
         await _deny(ctx, "🚫 Cette commande est réservée à l'administrateur.")
