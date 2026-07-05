@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import discord
 from discord.ext import commands
@@ -64,6 +65,9 @@ async def _deny(ctx: commands.Context, message: str) -> None:
 )
 async def dashboard(ctx: commands.Context):
     await _delete_invoking_message(ctx)
+    # Ack immédiat : l'appel vers PythonAnywhere peut dépasser les 3s
+    # tolérées par Discord avant qu'il considère l'interaction comme expirée.
+    await ctx.defer()
 
     if not db.is_authorized(ctx.author.id):
         await _deny(
@@ -89,6 +93,7 @@ async def dashboard(ctx: commands.Context):
 )
 async def admin(ctx: commands.Context):
     await _delete_invoking_message(ctx)
+    await ctx.defer()
 
     if ctx.author.id != OWNER_DISCORD_ID:
         await _deny(ctx, "🚫 Cette commande est réservée à l'administrateur.")
@@ -97,6 +102,33 @@ async def admin(ctx: commands.Context):
     embed = build_admin_embed()
     view = AdminView()
     await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="ping",
+    description="Vérifie que le bot et le dashboard Flask répondent",
+)
+async def ping(ctx: commands.Context):
+    await _delete_invoking_message(ctx)
+    await ctx.defer()
+
+    discord_latency_ms = round(bot.latency * 1000)
+
+    start = time.monotonic()
+    status = await api_client.get_status()
+    flask_latency_ms = round((time.monotonic() - start) * 1000)
+
+    if status is None:
+        flask_line = "🔴 Injoignable"
+        color = discord.Color.red()
+    else:
+        flask_line = f"🟢 OK ({flask_latency_ms} ms)"
+        color = discord.Color.green()
+
+    embed = discord.Embed(title="🏓 Pong !", color=color)
+    embed.add_field(name="Bot Discord", value=f"🟢 {discord_latency_ms} ms", inline=False)
+    embed.add_field(name="Dashboard Flask", value=flask_line, inline=False)
+    await ctx.send(embed=embed)
 
 
 if __name__ == "__main__":
