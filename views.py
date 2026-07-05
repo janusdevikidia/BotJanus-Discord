@@ -1,9 +1,14 @@
+"""
+Composants d'interface Discord (boutons, menus déroulants, formulaires)
+pour les commandes /dashboard et /admin.
+"""
 from __future__ import annotations
 
 import discord
 
 import database as db
 import api_client
+import cooldown
 from config import PORTAL_SCRIPT_NAME
 
 
@@ -66,6 +71,7 @@ class DashboardView(BaseAuthorizedView):
             self.add_item(StopButton())
         else:
             self.add_item(StartButton())
+        self.add_item(LogsButton())
         self.add_item(DeleteButton())
 
 
@@ -74,6 +80,9 @@ class StopButton(discord.ui.Button):
         super().__init__(label="⏹ Arrêter", style=discord.ButtonStyle.danger, custom_id="dashboard_stop")
 
     async def callback(self, interaction: discord.Interaction):
+        if not await _consume_cooldown(interaction):
+            return
+
         await interaction.response.defer()
         script_name = self.view.script_name
         success, message = await api_client.stop_script()
@@ -127,6 +136,7 @@ class ScriptSelectView(BaseAuthorizedView):
 
 class ScriptSelect(discord.ui.Select):
     def __init__(self, scripts: list[dict]):
+        self.active_map = {s["filename"]: s["is_active"] for s in scripts}
         options = [
             discord.SelectOption(
                 label=s["filename"],
@@ -139,6 +149,18 @@ class ScriptSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         choice = self.values[0]
+
+        # Un script désactivé sur le site web ne peut être lancé que par l'admin.
+        if not self.active_map.get(choice, True) and interaction.user.id != _owner_id():
+            await interaction.response.send_message(
+                "🚫 Ce script est désactivé sur le dashboard web. Seul l'administrateur peut le lancer.",
+                ephemeral=True,
+            )
+            return
+
+        if not await _consume_cooldown(interaction):
+            return
+
         if choice == PORTAL_SCRIPT_NAME:
             await interaction.response.send_modal(PortalModal(choice, interaction.message))
             return
@@ -175,6 +197,9 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
         self.original_message = original_message
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await _consume_cooldown(interaction):
+            return
+
         await interaction.response.defer()
         extra = {
             "arg_lang": self.arg_lang.value,
@@ -200,6 +225,27 @@ async def _launch_and_report(interaction: discord.Interaction, choice: str):
     await interaction.edit_original_response(content=content, embed=None, view=None)
 
 
+class LogsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="📋 Logs", style=discord.ButtonStyle.secondary, custom_id="dashboard_logs")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        logs = await api_client.get_logs(limit=20)
+        if logs is None:
+            await interaction.followup.send("⚠️ Impossible de récupérer les logs.", ephemeral=True)
+            return
+        if not logs:
+            await interaction.followup.send("Aucun log disponible pour le moment.", ephemeral=True)
+            return
+
+        text = "\n".join(logs)
+        # Discord limite un message à 2000 caractères : on garde la fin (le plus récent)
+        if len(text) > 1900:
+            text = "…\n" + text[-1900:]
+        await interaction.followup.send(f"```\n{text}\n```", ephemeral=True)
+
+
 class DeleteButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="✖", style=discord.ButtonStyle.secondary, custom_id="dashboard_delete")
@@ -211,6 +257,25 @@ class DeleteButton(discord.ui.Button):
 def _owner_id() -> int:
     from config import OWNER_DISCORD_ID
     return OWNER_DISCORD_ID
+
+
+async def _consume_cooldown(interaction: discord.Interaction) -> bool:
+    """Vérifie le cooldown anti-spam avant une action Lancer/Arrêter réelle.
+
+    Renvoie True si l'action peut continuer (et la comptabilise aussitôt,
+    pour éviter qu'un double-clic simultané passe les deux la vérification).
+    Si bloqué, répond déjà à l'interaction avec un message éphémère et
+    renvoie False — l'appelant n'a alors plus rien à faire.
+    """
+    remaining = cooldown.check_cooldown()
+    if remaining > 0:
+        await interaction.response.send_message(
+            f"⏳ Merci d'attendre encore {remaining:.0f}s avant de relancer une action (anti-spam).",
+            ephemeral=True,
+        )
+        return False
+    cooldown.record_action()
+    return True
 
 
 # ==========================================
