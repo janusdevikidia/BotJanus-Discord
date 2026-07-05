@@ -1,3 +1,8 @@
+"""
+Client vers l'API Flask du dashboard (routes /api/... protégées par X-API-Key).
+Toutes les fonctions retournent None en cas d'erreur réseau/serveur, pour que
+le bot puisse afficher un message clair plutôt que de planter.
+"""
 from __future__ import annotations
 
 import aiohttp
@@ -27,6 +32,20 @@ async def get_scripts() -> list[dict] | None:
                     return None
                 data = await resp.json()
                 return data.get("scripts", [])
+    except Exception:
+        return None
+
+
+async def get_logs(limit: int = 20) -> list[str] | None:
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.get(
+                f"{FLASK_API_URL}/api/logs", headers=HEADERS, params={"limit": limit}
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                return data.get("logs", [])
     except Exception:
         return None
 
