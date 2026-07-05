@@ -1,6 +1,11 @@
+"""
+Chargement de la configuration depuis le fichier .env.
+Ne contient aucun secret en dur : tout vient du .env que tu remplis toi-même.
+"""
 from __future__ import annotations
 
 import os
+import pathlib
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -34,8 +39,12 @@ FLASK_API_KEY: str = _require("FLASK_API_KEY")
 # Nom du script qui nécessite des paramètres supplémentaires (langue/catégorie/portail)
 PORTAL_SCRIPT_NAME: str = "portal.py"
 
-# Chemin de la base SQLite locale du bot (liste blanche + verrou)
-import pathlib
-
+# Chemin de la base SQLite locale du bot (liste blanche + verrou).
+# Par défaut, toujours à côté de ce fichier, peu importe le dossier depuis
+# lequel Python est lancé (VS Code, terminal, service systemd, etc.).
 _default_db_path = str(pathlib.Path(__file__).parent / "botjanus_discord.db")
 DB_PATH: str = os.environ.get("BOT_DB_PATH") or _default_db_path
+
+# Délai minimum (secondes) entre deux actions Lancer/Arrêter, pour éviter
+# le spam de clics vers l'API Flask. Modifiable via .env si besoin.
+ACTION_COOLDOWN_SECONDS: int = int(os.environ.get("ACTION_COOLDOWN_SECONDS", "10"))
