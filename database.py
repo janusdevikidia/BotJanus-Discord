@@ -1,10 +1,3 @@
-"""
-Stockage local du bot Discord : liste blanche des utilisateurs autorisés
-et état du verrou de lancement.
-
-Complètement indépendant de la base de données du dashboard Flask :
-pas besoin d'accès au serveur PythonAnywhere pour gérer ça.
-"""
 from __future__ import annotations
 
 import sqlite3

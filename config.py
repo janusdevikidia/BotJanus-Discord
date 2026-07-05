@@ -1,7 +1,3 @@
-"""
-Chargement de la configuration depuis le fichier .env.
-Ne contient aucun secret en dur : tout vient du .env que tu remplis toi-même.
-"""
 from __future__ import annotations
 
 import os

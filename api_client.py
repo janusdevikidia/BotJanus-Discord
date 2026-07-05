@@ -1,8 +1,3 @@
-"""
-Client vers l'API Flask du dashboard (routes /api/... protégées par X-API-Key).
-Toutes les fonctions retournent None en cas d'erreur réseau/serveur, pour que
-le bot puisse afficher un message clair plutôt que de planter.
-"""
 from __future__ import annotations
 
 import aiohttp

@@ -1,10 +1,3 @@
-"""
-Bot Discord de gestion du dashboard BotJanus (Vikidia).
-
-Commandes (slash ET préfixe grâce aux hybrid commands de discord.py) :
-  /dashboard ou !dashboard : état du robot Vikidia + boutons Lancer/Arrêter/Supprimer
-  /admin     ou !admin     : gestion de la liste blanche + verrou (réservé à l'admin)
-"""
 import asyncio
 import logging
 
