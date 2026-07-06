@@ -37,7 +37,7 @@ async def _build_presence_text() -> str:
 @tasks.loop(seconds=PRESENCE_REFRESH_SECONDS)
 async def refresh_presence():
     text = await _build_presence_text()
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=text))
+    await bot.change_presence(activity=discord.CustomActivity(name=text, state=text))
 
 
 @bot.event
