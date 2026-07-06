@@ -3,9 +3,15 @@ import logging
 import time
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from config import DISCORD_BOT_TOKEN, DISCORD_GUILD_ID, COMMAND_PREFIX, OWNER_DISCORD_ID
+from config import (
+    DISCORD_BOT_TOKEN,
+    DISCORD_GUILD_ID,
+    COMMAND_PREFIX,
+    OWNER_DISCORD_ID,
+    PRESENCE_REFRESH_SECONDS,
+)
 import database as db
 import api_client
 from views import DashboardView, build_status_embed, AdminView, build_admin_embed
@@ -17,6 +23,21 @@ intents = discord.Intents.default()
 intents.message_content = True  # requis pour lire !dashboard / !admin
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
+
+
+async def _build_presence_text() -> str:
+    status = await api_client.get_status()
+    if status is None:
+        return "⚠️ Dashboard injoignable"
+    if status.get("running"):
+        return f"🟢 Actif ({status.get('script_name') or '?'})"
+    return "🔴 Arrêté"
+
+
+@tasks.loop(seconds=PRESENCE_REFRESH_SECONDS)
+async def refresh_presence():
+    text = await _build_presence_text()
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=text))
 
 
 @bot.event
@@ -33,6 +54,9 @@ async def on_ready():
             log.info(f"{len(synced)} commande(s) synchronisée(s) globalement (peut prendre jusqu'à 1h à apparaître).")
     except Exception as e:
         log.error(f"Erreur de synchronisation des commandes : {e}")
+
+    if not refresh_presence.is_running():
+        refresh_presence.start()
 
     log.info(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 

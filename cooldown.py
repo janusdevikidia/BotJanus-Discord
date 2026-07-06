@@ -1,10 +1,3 @@
-"""
-Anti-spam simple : impose un délai minimum entre deux actions Lancer/Arrêter.
-
-Le compteur vit en mémoire (pas en base) : il se réinitialise à chaque
-redémarrage du bot, ce qui n'a aucune conséquence puisqu'il ne protège
-qu'un enchaînement rapide de clics, pas un état à conserver.
-"""
 from __future__ import annotations
 
 import time

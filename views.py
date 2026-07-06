@@ -1,7 +1,3 @@
-"""
-Composants d'interface Discord (boutons, menus déroulants, formulaires)
-pour les commandes /dashboard et /admin.
-"""
 from __future__ import annotations
 
 import discord

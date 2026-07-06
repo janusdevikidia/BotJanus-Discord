@@ -1,7 +1,3 @@
-"""
-Chargement de la configuration depuis le fichier .env.
-Ne contient aucun secret en dur : tout vient du .env que tu remplis toi-même.
-"""
 from __future__ import annotations
 
 import os
@@ -48,3 +44,7 @@ DB_PATH: str = os.environ.get("BOT_DB_PATH") or _default_db_path
 # Délai minimum (secondes) entre deux actions Lancer/Arrêter, pour éviter
 # le spam de clics vers l'API Flask. Modifiable via .env si besoin.
 ACTION_COOLDOWN_SECONDS: int = int(os.environ.get("ACTION_COOLDOWN_SECONDS", "10"))
+
+# Fréquence (secondes) à laquelle le bot vérifie l'état du script pour
+# mettre à jour son statut Discord ("Regarde 🟢 Actif (script.py)" etc.).
+PRESENCE_REFRESH_SECONDS: int = int(os.environ.get("PRESENCE_REFRESH_SECONDS", "60"))
