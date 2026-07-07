@@ -84,6 +84,7 @@ class StopButton(discord.ui.Button):
         success, message = await api_client.stop_script()
         if success:
             content = f"🛑 **{interaction.user.display_name}** a arrêté **{script_name}**."
+            await interaction.client.update_presence()  # Actualisation instantanée
         else:
             content = f"⚠️ Échec de l'arrêt : {message}"
         await interaction.edit_original_response(content=content, embed=None, view=None)
@@ -207,6 +208,7 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
         )
         if success:
             content = f"✅ **{interaction.user.display_name}** a lancé **{self.choice}**."
+            await interaction.client.update_presence()  # Actualisation instantanée
         else:
             content = f"⚠️ Échec du lancement : {message}"
         await self.original_message.edit(content=content, embed=None, view=None)
@@ -216,6 +218,7 @@ async def _launch_and_report(interaction: discord.Interaction, choice: str):
     success, message = await api_client.start_script(choice, username=interaction.user.display_name)
     if success:
         content = f"✅ **{interaction.user.display_name}** a lancé **{choice}**."
+        await interaction.client.update_presence()  # Actualisation instantanée
     else:
         content = f"⚠️ Échec du lancement : {message}"
     await interaction.edit_original_response(content=content, embed=None, view=None)
@@ -256,13 +259,7 @@ def _owner_id() -> int:
 
 
 async def _consume_cooldown(interaction: discord.Interaction) -> bool:
-    """Vérifie le cooldown anti-spam avant une action Lancer/Arrêter réelle.
-
-    Renvoie True si l'action peut continuer (et la comptabilise aussitôt,
-    pour éviter qu'un double-clic simultané passe les deux la vérification).
-    Si bloqué, répond déjà à l'interaction avec un message éphémère et
-    renvoie False — l'appelant n'a alors plus rien à faire.
-    """
+    """Vérifie le cooldown anti-spam avant une action Lancer/Arrêter réelle."""
     remaining = cooldown.check_cooldown()
     if remaining > 0:
         await interaction.response.send_message(

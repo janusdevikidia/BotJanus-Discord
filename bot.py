@@ -34,10 +34,17 @@ async def _build_presence_text() -> str:
     return "🔴 Arrêté"
 
 
-@tasks.loop(seconds=PRESENCE_REFRESH_SECONDS)
-async def refresh_presence():
+# Nouvelle fonction attachée à l'instance de bot pour forcer l'actualisation
+async def update_presence() -> None:
     text = await _build_presence_text()
     await bot.change_presence(activity=discord.CustomActivity(name=text, state=text))
+
+bot.update_presence = update_presence
+
+
+@tasks.loop(seconds=PRESENCE_REFRESH_SECONDS)
+async def refresh_presence():
+    await bot.update_presence()
 
 
 @bot.event
