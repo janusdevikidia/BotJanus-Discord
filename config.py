@@ -47,4 +47,4 @@ ACTION_COOLDOWN_SECONDS: int = int(os.environ.get("ACTION_COOLDOWN_SECONDS", "10
 
 # Fréquence (secondes) à laquelle le bot vérifie l'état du script pour
 # mettre à jour son statut Discord ("Regarde 🟢 Actif (script.py)" etc.).
-PRESENCE_REFRESH_SECONDS: int = int(os.environ.get("PRESENCE_REFRESH_SECONDS", "20"))
+PRESENCE_REFRESH_SECONDS = 120
