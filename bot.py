@@ -14,6 +14,7 @@ from config import (
 )
 import database as db
 import api_client
+import log_forwarding
 from views import DashboardView, build_status_embed, AdminView, build_admin_embed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -47,6 +48,14 @@ async def refresh_presence():
     await bot.update_presence()
 
 
+@tasks.loop(seconds=60)
+async def refresh_log_threads():
+    """Toutes les minutes : poste les nouvelles lignes de logs de BotJanus dans
+    les fils actifs, et supprime les fils de plus de 2 jours."""
+    await log_forwarding.poll_log_threads(bot)
+    await log_forwarding.cleanup_old_threads(bot)
+
+
 @bot.event
 async def on_ready():
     db.init_db()
@@ -64,6 +73,9 @@ async def on_ready():
 
     if not refresh_presence.is_running():
         refresh_presence.start()
+
+    if not refresh_log_threads.is_running():
+        refresh_log_threads.start()
 
     log.info(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 

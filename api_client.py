@@ -5,7 +5,7 @@ import aiohttp
 from config import FLASK_API_URL, FLASK_API_KEY
 
 HEADERS = {"X-API-Key": FLASK_API_KEY, "Content-Type": "application/json"}
-TIMEOUT = aiohttp.ClientTimeout(total=30)
+TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
 async def get_status() -> dict | None:

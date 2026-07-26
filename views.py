@@ -5,6 +5,7 @@ import discord
 import database as db
 import api_client
 import cooldown
+import log_forwarding
 from config import PORTAL_SCRIPT_NAME
 
 
@@ -88,6 +89,11 @@ class StopButton(discord.ui.Button):
         else:
             content = f"⚠️ Échec de l'arrêt : {message}"
         await interaction.edit_original_response(content=content, embed=None, view=None)
+
+        # Transfert dans le salon de logs (pas de fil pour un Arrêt).
+        await log_forwarding.forward_action_message(
+            interaction.client, content=content, script_name=script_name, create_thread=False,
+        )
 
 
 class StartButton(discord.ui.Button):
@@ -213,6 +219,11 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
             content = f"⚠️ Échec du lancement : {message}"
         await self.original_message.edit(content=content, embed=None, view=None)
 
+        # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
+        await log_forwarding.forward_action_message(
+            interaction.client, content=content, script_name=self.choice, create_thread=success,
+        )
+
 
 async def _launch_and_report(interaction: discord.Interaction, choice: str):
     success, message = await api_client.start_script(choice, username=interaction.user.display_name)
@@ -222,6 +233,11 @@ async def _launch_and_report(interaction: discord.Interaction, choice: str):
     else:
         content = f"⚠️ Échec du lancement : {message}"
     await interaction.edit_original_response(content=content, embed=None, view=None)
+
+    # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
+    await log_forwarding.forward_action_message(
+        interaction.client, content=content, script_name=choice, create_thread=success,
+    )
 
 
 class LogsButton(discord.ui.Button):
