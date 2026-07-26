@@ -194,7 +194,7 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
     arg_cat = discord.ui.TextInput(label="Catégorie", placeholder="Nom de la catégorie", required=True)
     arg_portal = discord.ui.TextInput(label="Portail", placeholder="Nom du portail", required=True)
 
-    def __init__(self, choice: str, original_message: discord.Message):
+    def __init__(self, choice: str, original_message: discord.Message | None):
         super().__init__()
         self.choice = choice
         self.original_message = original_message
@@ -217,7 +217,11 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
             await interaction.client.update_presence()  # Actualisation instantanée
         else:
             content = f"⚠️ Échec du lancement : {message}"
-        await self.original_message.edit(content=content, embed=None, view=None)
+
+        if self.original_message is not None:
+            await self.original_message.edit(content=content, embed=None, view=None)
+        else:
+            await interaction.followup.send(content)
 
         # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
         await log_forwarding.forward_action_message(
