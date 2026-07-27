@@ -11,10 +11,13 @@ from config import (
     COMMAND_PREFIX,
     OWNER_DISCORD_ID,
     PRESENCE_REFRESH_SECONDS,
+    PORTAL_SCRIPT_NAME,
 )
 import database as db
 import api_client
-from views import DashboardView, build_status_embed, AdminView, build_admin_embed
+import cooldown
+import log_forwarding
+from views import DashboardView, build_status_embed, AdminView, build_admin_embed, PortalModal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("botjanus_discord")
@@ -47,6 +50,14 @@ async def refresh_presence():
     await bot.update_presence()
 
 
+@tasks.loop(seconds=60)
+async def refresh_log_threads():
+    """Toutes les minutes : poste les nouvelles lignes de logs de BotJanus dans
+    les fils actifs, et supprime les fils de plus de 2 jours."""
+    await log_forwarding.poll_log_threads(bot)
+    await log_forwarding.cleanup_old_threads(bot)
+
+
 @bot.event
 async def on_ready():
     db.init_db()
@@ -64,6 +75,9 @@ async def on_ready():
 
     if not refresh_presence.is_running():
         refresh_presence.start()
+
+    if not refresh_log_threads.is_running():
+        refresh_log_threads.start()
 
     log.info(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
@@ -88,6 +102,16 @@ async def _deny(ctx: commands.Context, message: str) -> None:
             await warning.delete()
         except discord.HTTPException:
             pass
+
+
+async def _consume_cooldown(ctx: commands.Context) -> bool:
+    """Vérifie le cooldown anti-spam avant une action Lancer/Arrêter réelle (/start, /stop)."""
+    remaining = cooldown.check_cooldown()
+    if remaining > 0:
+        await _deny(ctx, f"⏳ Merci d'attendre encore {remaining:.0f}s avant de relancer une action (anti-spam).")
+        return False
+    cooldown.record_action()
+    return True
 
 
 @bot.hybrid_command(
@@ -133,6 +157,145 @@ async def admin(ctx: commands.Context):
     embed = build_admin_embed()
     view = AdminView()
     await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="start",
+    description="Lance directement un script (ne fonctionne pas si un script est déjà actif)",
+)
+@discord.app_commands.describe(script="Nom du fichier script à lancer (ex: monscript.py)")
+async def start(ctx: commands.Context, script: str):
+    await _delete_invoking_message(ctx)
+
+    if not db.is_authorized(ctx.author.id):
+        await _deny(
+            ctx,
+            "🚫 Tu n'es pas autorisé à utiliser cette commande. "
+            "Demande à l'administrateur de t'ajouter à la liste blanche via `/admin`.",
+        )
+        return
+
+    if db.get_lock() and ctx.author.id != OWNER_DISCORD_ID:
+        await _deny(ctx, "🔒 Le lancement est verrouillé par l'administrateur.")
+        return
+
+    # portal.py nécessite des paramètres supplémentaires : formulaire disponible uniquement en slash.
+    if script == PORTAL_SCRIPT_NAME:
+        if ctx.interaction is not None and not ctx.interaction.response.is_done():
+            if not await _consume_cooldown(ctx):
+                return
+            await ctx.interaction.response.send_modal(PortalModal(script, None))
+            return
+        await _deny(
+            ctx,
+            "⚠️ `portal.py` nécessite des paramètres supplémentaires (langue/catégorie/portail) : "
+            "utilise `/start` (slash) pour remplir le formulaire.",
+        )
+        return
+
+    await ctx.defer()
+
+    scripts = await api_client.get_scripts()
+    if scripts is None:
+        await _deny(ctx, "⚠️ Impossible de récupérer la liste des scripts depuis le dashboard.")
+        return
+    match = next((s for s in scripts if s["filename"] == script), None)
+    if match is None:
+        await _deny(
+            ctx,
+            f"⚠️ Script inconnu : `{script}`. Utilise `/start` pour voir la liste proposée automatiquement.",
+        )
+        return
+    if not match.get("is_active", True) and ctx.author.id != OWNER_DISCORD_ID:
+        await _deny(ctx, "🚫 Ce script est désactivé sur le dashboard web. Seul l'administrateur peut le lancer.")
+        return
+
+    status = await api_client.get_status()
+    if status is None:
+        await _deny(ctx, "⚠️ Impossible de contacter le dashboard Flask.")
+        return
+    if status.get("running"):
+        await _deny(
+            ctx,
+            f"⚠️ Un script est déjà actif : **{status.get('script_name')}**. Arrête-le d'abord avec `/stop`.",
+        )
+        return
+
+    if not await _consume_cooldown(ctx):
+        return
+
+    success, message = await api_client.start_script(script, username=ctx.author.display_name)
+    if success:
+        content = f"✅ **{ctx.author.display_name}** a lancé **{script}**."
+        await bot.update_presence()  # Actualisation instantanée
+    else:
+        content = f"⚠️ Échec du lancement : {message}"
+    await ctx.send(content)
+
+    # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
+    await log_forwarding.forward_action_message(
+        bot, content=content, script_name=script, create_thread=success,
+    )
+
+
+@start.autocomplete("script")
+async def start_script_autocomplete(interaction: discord.Interaction, current: str):
+    if not db.is_authorized(interaction.user.id):
+        return []
+    scripts = await api_client.get_scripts()
+    if not scripts:
+        return []
+    current_lower = current.lower()
+    choices = []
+    for s in scripts:
+        name = s["filename"]
+        if current_lower and current_lower not in name.lower():
+            continue
+        emoji = "🟢" if s.get("is_active") else "⚪"
+        choices.append(discord.app_commands.Choice(name=f"{emoji} {name}"[:100], value=name))
+    return choices[:25]
+
+
+@bot.hybrid_command(
+    name="stop",
+    description="Arrête le script actuellement actif",
+)
+async def stop_command(ctx: commands.Context):
+    await _delete_invoking_message(ctx)
+    await ctx.defer()
+
+    if not db.is_authorized(ctx.author.id):
+        await _deny(
+            ctx,
+            "🚫 Tu n'es pas autorisé à utiliser cette commande. "
+            "Demande à l'administrateur de t'ajouter à la liste blanche via `/admin`.",
+        )
+        return
+
+    status = await api_client.get_status()
+    if status is None:
+        await _deny(ctx, "⚠️ Impossible de contacter le dashboard Flask.")
+        return
+    if not status.get("running"):
+        await _deny(ctx, "ℹ️ Aucun script n'est actuellement actif.")
+        return
+
+    if not await _consume_cooldown(ctx):
+        return
+
+    script_name = status.get("script_name") or "Inactif"
+    success, message = await api_client.stop_script()
+    if success:
+        content = f"🛑 **{ctx.author.display_name}** a arrêté **{script_name}**."
+        await bot.update_presence()  # Actualisation instantanée
+    else:
+        content = f"⚠️ Échec de l'arrêt : {message}"
+    await ctx.send(content)
+
+    # Transfert dans le salon de logs (pas de fil pour un Arrêt).
+    await log_forwarding.forward_action_message(
+        bot, content=content, script_name=script_name, create_thread=False,
+    )
 
 
 @bot.hybrid_command(

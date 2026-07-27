@@ -5,7 +5,8 @@ import discord
 import database as db
 import api_client
 import cooldown
-from config import PORTAL_SCRIPT_NAME
+import log_forwarding
+from config import PORTAL_SCRIPT_NAME, LOG_CHANNEL_ID
 
 
 # ==========================================
@@ -88,6 +89,11 @@ class StopButton(discord.ui.Button):
         else:
             content = f"⚠️ Échec de l'arrêt : {message}"
         await interaction.edit_original_response(content=content, embed=None, view=None)
+
+        # Transfert dans le salon de logs (pas de fil pour un Arrêt).
+        await log_forwarding.forward_action_message(
+            interaction.client, content=content, script_name=script_name, create_thread=False,
+        )
 
 
 class StartButton(discord.ui.Button):
@@ -188,7 +194,7 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
     arg_cat = discord.ui.TextInput(label="Catégorie", placeholder="Nom de la catégorie", required=True)
     arg_portal = discord.ui.TextInput(label="Portail", placeholder="Nom du portail", required=True)
 
-    def __init__(self, choice: str, original_message: discord.Message):
+    def __init__(self, choice: str, original_message: discord.Message | None):
         super().__init__()
         self.choice = choice
         self.original_message = original_message
@@ -211,7 +217,16 @@ class PortalModal(discord.ui.Modal, title="Paramètres de portal.py"):
             await interaction.client.update_presence()  # Actualisation instantanée
         else:
             content = f"⚠️ Échec du lancement : {message}"
-        await self.original_message.edit(content=content, embed=None, view=None)
+
+        if self.original_message is not None:
+            await self.original_message.edit(content=content, embed=None, view=None)
+        else:
+            await interaction.followup.send(content)
+
+        # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
+        await log_forwarding.forward_action_message(
+            interaction.client, content=content, script_name=self.choice, create_thread=success,
+        )
 
 
 async def _launch_and_report(interaction: discord.Interaction, choice: str):
@@ -223,26 +238,31 @@ async def _launch_and_report(interaction: discord.Interaction, choice: str):
         content = f"⚠️ Échec du lancement : {message}"
     await interaction.edit_original_response(content=content, embed=None, view=None)
 
+    # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
+    await log_forwarding.forward_action_message(
+        interaction.client, content=content, script_name=choice, create_thread=success,
+    )
+
 
 class LogsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="📋 Logs", style=discord.ButtonStyle.secondary, custom_id="dashboard_logs")
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        logs = await api_client.get_logs(limit=20)
-        if logs is None:
-            await interaction.followup.send("⚠️ Impossible de récupérer les logs.", ephemeral=True)
-            return
-        if not logs:
-            await interaction.followup.send("Aucun log disponible pour le moment.", ephemeral=True)
-            return
+        status = await api_client.get_status()
+        running = bool(status and status.get("running"))
+        warning = "" if status is not None else "⚠️ Impossible de contacter le dashboard Flask (statut inconnu).\n"
 
-        text = "\n".join(logs)
-        # Discord limite un message à 2000 caractères : on garde la fin (le plus récent)
-        if len(text) > 1900:
-            text = "…\n" + text[-1900:]
-        await interaction.followup.send(f"```\n{text}\n```", ephemeral=True)
+        thread_entry = db.get_latest_log_thread() if running else None
+
+        if thread_entry:
+            content = f"{warning}📡 Fil de logs en cours : <#{thread_entry['thread_id']}>"
+        elif LOG_CHANNEL_ID:
+            content = f"{warning}📋 Aucun script actif pour le moment. Historique des logs : <#{LOG_CHANNEL_ID}>"
+        else:
+            content = f"{warning}⚠️ Aucun salon de logs n'est configuré (variable LOG_CHANNEL_ID manquante)."
+
+        await interaction.response.send_message(content, ephemeral=True)
 
 
 class DeleteButton(discord.ui.Button):

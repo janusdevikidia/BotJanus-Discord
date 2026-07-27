@@ -31,6 +31,15 @@ DISCORD_GUILD_ID: int | None = int(_guild_id) if _guild_id else None
 FLASK_API_URL: str = _require("FLASK_API_URL").rstrip("/")
 FLASK_API_KEY: str = _require("FLASK_API_KEY")
 
+# --- Salon de transfert des logs BotJanus ---
+# Optionnel : si non renseigné, le transfert des messages et la création
+# des fils de logs en temps réel sont simplement désactivés.
+_log_guild_id = os.environ.get("LOG_GUILD_ID")
+LOG_GUILD_ID: int | None = int(_log_guild_id) if _log_guild_id else None
+
+_log_channel_id = os.environ.get("LOG_CHANNEL_ID")
+LOG_CHANNEL_ID: int | None = int(_log_channel_id) if _log_channel_id else None
+
 # --- Divers ---
 # Nom du script qui nécessite des paramètres supplémentaires (langue/catégorie/portail)
 PORTAL_SCRIPT_NAME: str = "portal.py"
@@ -47,4 +56,4 @@ ACTION_COOLDOWN_SECONDS: int = int(os.environ.get("ACTION_COOLDOWN_SECONDS", "10
 
 # Fréquence (secondes) à laquelle le bot vérifie l'état du script pour
 # mettre à jour son statut Discord ("Regarde 🟢 Actif (script.py)" etc.).
-PRESENCE_REFRESH_SECONDS = 120
+PRESENCE_REFRESH_SECONDS: int = int(os.environ.get("PRESENCE_REFRESH_SECONDS", "20"))
