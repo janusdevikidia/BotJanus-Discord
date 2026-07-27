@@ -6,7 +6,7 @@ import database as db
 import api_client
 import cooldown
 import log_forwarding
-from config import PORTAL_SCRIPT_NAME
+from config import PORTAL_SCRIPT_NAME, LOG_CHANNEL_ID
 
 
 # ==========================================
@@ -249,20 +249,20 @@ class LogsButton(discord.ui.Button):
         super().__init__(label="📋 Logs", style=discord.ButtonStyle.secondary, custom_id="dashboard_logs")
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        logs = await api_client.get_logs(limit=20)
-        if logs is None:
-            await interaction.followup.send("⚠️ Impossible de récupérer les logs.", ephemeral=True)
-            return
-        if not logs:
-            await interaction.followup.send("Aucun log disponible pour le moment.", ephemeral=True)
-            return
+        status = await api_client.get_status()
+        running = bool(status and status.get("running"))
+        warning = "" if status is not None else "⚠️ Impossible de contacter le dashboard Flask (statut inconnu).\n"
 
-        text = "\n".join(logs)
-        # Discord limite un message à 2000 caractères : on garde la fin (le plus récent)
-        if len(text) > 1900:
-            text = "…\n" + text[-1900:]
-        await interaction.followup.send(f"```\n{text}\n```", ephemeral=True)
+        thread_entry = db.get_latest_log_thread() if running else None
+
+        if thread_entry:
+            content = f"{warning}📡 Fil de logs en cours : <#{thread_entry['thread_id']}>"
+        elif LOG_CHANNEL_ID:
+            content = f"{warning}📋 Aucun script actif pour le moment. Historique des logs : <#{LOG_CHANNEL_ID}>"
+        else:
+            content = f"{warning}⚠️ Aucun salon de logs n'est configuré (variable LOG_CHANNEL_ID manquante)."
+
+        await interaction.response.send_message(content, ephemeral=True)
 
 
 class DeleteButton(discord.ui.Button):

@@ -133,6 +133,17 @@ def get_log_threads() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_latest_log_thread() -> dict | None:
+    """Renvoie le fil de logs le plus récemment créé (correspond au script actuellement
+    actif, puisqu'un seul script peut tourner à la fois)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT thread_id, channel_id, guild_id, script_name, created_at, last_log_line "
+            "FROM log_threads ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def update_log_thread_last_line(thread_id: int, last_line: str) -> None:
     with _connect() as conn:
         conn.execute(
