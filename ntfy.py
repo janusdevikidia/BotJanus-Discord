@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from email.header import Header
 
 import aiohttp
 
@@ -37,6 +38,17 @@ def find_alert_keywords(line: str) -> list[str]:
     return [kw for kw in URGENT_KEYWORDS if kw in lower]
 
 
+def _encode_header(value: str) -> str:
+    """Encode une valeur de header HTTP contenant des caractères non-ASCII (accents, emojis)
+    au format RFC 2047 — c'est le format que ntfy sait décoder pour Title/Tags.
+    Un header laissé en UTF-8 brut est mal interprété par le serveur (mojibake)."""
+    try:
+        value.encode("ascii")
+        return value  # déjà ASCII, rien à faire
+    except UnicodeEncodeError:
+        return Header(value, "utf-8").encode()
+
+
 async def _send(
     topic: str,
     message: str,
@@ -50,8 +62,7 @@ async def _send(
 
     headers: dict[str, str] = {}
     if title:
-        # ntfy exige de l'ASCII dans les headers HTTP ; on encode le reste en UTF-8 via un header dédié.
-        headers["Title"] = title.encode("utf-8").decode("latin-1", errors="ignore")
+        headers["Title"] = _encode_header(title)
     if priority:
         headers["Priority"] = priority
     if tags:
@@ -80,7 +91,7 @@ async def notify_urgent(script_name: str, matched_lines: list[str]) -> None:
     await _send(
         NTFY_TOPIC_URGENT,
         body,
-        title=f"🚨 BotJanus — alerte logs ({script_name})",
+        title=f"BotJanus - alerte logs ({script_name})",
         priority="urgent",
         tags="rotating_light,warning",
     )
