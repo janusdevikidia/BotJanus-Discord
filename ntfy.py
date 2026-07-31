@@ -21,7 +21,6 @@ URGENT_KEYWORDS = [
     "exception", "traceback",
     "échec", "echec", "failed", "failure",
     "denied", "refusé", "refuse",
-    "timeout", "expiré", "expire",
 ]
 
 _MARKDOWN_RE = re.compile(r"[*_`]")
