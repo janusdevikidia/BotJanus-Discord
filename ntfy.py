@@ -92,6 +92,6 @@ async def notify_urgent(script_name: str, matched_lines: list[str]) -> None:
         NTFY_TOPIC_URGENT,
         body,
         title=f"BotJanus - alerte logs ({script_name})",
-        priority="urgent",
+        priority="default",
         tags="rotating_light,warning",
     )
