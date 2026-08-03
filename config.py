@@ -57,3 +57,14 @@ ACTION_COOLDOWN_SECONDS: int = int(os.environ.get("ACTION_COOLDOWN_SECONDS", "10
 # Fréquence (secondes) à laquelle le bot vérifie l'état du script pour
 # mettre à jour son statut Discord ("Regarde 🟢 Actif (script.py)" etc.).
 PRESENCE_REFRESH_SECONDS: int = int(os.environ.get("PRESENCE_REFRESH_SECONDS", "20"))
+
+# --- Notifications push (ntfy.sh) ---
+# Serveur ntfy à utiliser (par défaut l'instance publique ntfy.sh).
+# Peut être remplacé par une instance auto-hébergée via NTFY_SERVER.
+NTFY_SERVER: str = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+
+# Topic pour les notifications "normales" : Lancement / Arrêt d'un script.
+NTFY_TOPIC_STATUS: str = os.environ.get("NTFY_TOPIC_STATUS", "votre_topic_status")
+
+# Topic pour les alertes : ligne de log contenant "error", "warning", etc.
+NTFY_TOPIC_URGENT: str = os.environ.get("NTFY_TOPIC_URGENT", "salon_urgent")

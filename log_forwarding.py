@@ -7,6 +7,7 @@ import discord
 
 import api_client
 import database as db
+import ntfy
 from config import LOG_GUILD_ID, LOG_CHANNEL_ID
 
 log = logging.getLogger("botjanus_discord")
@@ -49,6 +50,9 @@ async def forward_action_message(
     """Transfère le message d'action (Lancer/Arrêter) dans le salon de logs.
     Si create_thread est vrai (uniquement pour un Lancement réussi), crée en plus
     un fil dédié qui recevra les logs de BotJanus en temps réel."""
+    # Notif push (ntfy) : indépendante du salon de logs Discord, envoyée dans tous les cas.
+    await ntfy.notify_status(content)
+
     channel = await _get_log_channel(client)
     if channel is None:
         return
@@ -150,6 +154,13 @@ async def poll_log_threads(client: discord.Client) -> None:
             except discord.HTTPException as e:
                 log.error("Échec de l'envoi des logs dans le fil %s : %s", entry["thread_id"], e)
                 continue
+
+            # Notif push "urgent" si une ou plusieurs nouvelles lignes contiennent
+            # un mot-clé d'alerte (error, warning, erreur, etc.).
+            alert_lines = [line for line in new_lines if ntfy.find_alert_keywords(line)]
+            if alert_lines:
+                await ntfy.notify_urgent(entry["script_name"], alert_lines)
+
             db.update_log_thread_last_line(entry["thread_id"], logs[-1])
 
 
