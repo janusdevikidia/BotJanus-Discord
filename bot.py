@@ -115,18 +115,20 @@ async def _consume_cooldown(ctx: commands.Context) -> bool:
     return True
 
 
-@bot.hybrid_command(
+@bot.tree.command(
     name="auth",
     description="Lie ton compte Discord à ton compte Vikidia (nécessaire pour lancer/arrêter le robot)",
 )
-async def auth_command(ctx: commands.Context):
-    await _delete_invoking_message(ctx)
-    if ctx.interaction is not None:
-        await ctx.defer(ephemeral=True)
+async def auth_command(interaction: discord.Interaction):
+    # En commande slash, le premier paramètre est un discord.Interaction (et plus un commands.Context)
+    await interaction.response.defer(ephemeral=True)
 
-    url = await api_client.start_discord_link(ctx.author.id, str(ctx.author))
+    url = await api_client.start_discord_link(interaction.user.id, str(interaction.user))
     if not url:
-        await _deny(ctx, "⚠️ Impossible de contacter le dashboard pour générer le lien de liaison. Réessaie plus tard.")
+        await interaction.followup.send(
+            "⚠️ Impossible de contacter le dashboard pour générer le lien de liaison. Réessaie plus tard.",
+            ephemeral=True
+        )
         return
 
     message = (
@@ -135,16 +137,9 @@ async def auth_command(ctx: commands.Context):
         "Une fois connecté, tu pourras utiliser `/dashboard`, `/start` et `/stop` si ton compte "
         "wiki dispose des droits nécessaires (autopatrol, patroller, sysop ou bureaucrat)."
     )
-    if ctx.interaction is not None:
-        await ctx.send(message, ephemeral=True)
-    else:
-        try:
-            await ctx.author.send(message)
-            await ctx.send("📬 Je t'ai envoyé le lien de liaison en message privé.")
-        except discord.Forbidden:
-            await ctx.send(message)
-
-
+    
+    await interaction.followup.send(message, ephemeral=True)
+    
 @bot.hybrid_command(
     name="dashboard",
     description="Affiche l'état du robot Vikidia et permet de le lancer/arrêter",
