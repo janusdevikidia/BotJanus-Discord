@@ -15,6 +15,7 @@ from config import (
 )
 import database as db
 import api_client
+import auth_check
 import cooldown
 import log_forwarding
 from views import DashboardView, build_status_embed, AdminView, build_admin_embed, PortalModal
@@ -115,6 +116,36 @@ async def _consume_cooldown(ctx: commands.Context) -> bool:
 
 
 @bot.hybrid_command(
+    name="auth",
+    description="Lie ton compte Discord à ton compte Vikidia (nécessaire pour lancer/arrêter le robot)",
+)
+async def auth_command(ctx: commands.Context):
+    await _delete_invoking_message(ctx)
+    if ctx.interaction is not None:
+        await ctx.defer(ephemeral=True)
+
+    url = await api_client.start_discord_link(ctx.author.id, str(ctx.author))
+    if not url:
+        await _deny(ctx, "⚠️ Impossible de contacter le dashboard pour générer le lien de liaison. Réessaie plus tard.")
+        return
+
+    message = (
+        "🔗 Clique sur ce lien pour connecter ton compte Discord à ton compte Vikidia "
+        f"(lien à usage unique, valable quelques minutes) :\n{url}\n\n"
+        "Une fois connecté, tu pourras utiliser `/dashboard`, `/start` et `/stop` si ton compte "
+        "wiki dispose des droits nécessaires (autopatrol, patroller, sysop ou bureaucrat)."
+    )
+    if ctx.interaction is not None:
+        await ctx.send(message, ephemeral=True)
+    else:
+        try:
+            await ctx.author.send(message)
+            await ctx.send("📬 Je t'ai envoyé le lien de liaison en message privé.")
+        except discord.Forbidden:
+            await ctx.send(message)
+
+
+@bot.hybrid_command(
     name="dashboard",
     description="Affiche l'état du robot Vikidia et permet de le lancer/arrêter",
 )
@@ -124,12 +155,9 @@ async def dashboard(ctx: commands.Context):
     # tolérées par Discord avant qu'il considère l'interaction comme expirée.
     await ctx.defer()
 
-    if not db.is_authorized(ctx.author.id):
-        await _deny(
-            ctx,
-            "🚫 Tu n'es pas autorisé à utiliser cette commande. "
-            "Demande à l'administrateur de t'ajouter à la liste blanche via `/admin`.",
-        )
+    authorized, perms = await auth_check.check_discord_authorized(ctx.author.id)
+    if not authorized:
+        await _deny(ctx, auth_check.denial_message(perms))
         return
 
     status = await api_client.get_status()
@@ -167,12 +195,9 @@ async def admin(ctx: commands.Context):
 async def start(ctx: commands.Context, script: str):
     await _delete_invoking_message(ctx)
 
-    if not db.is_authorized(ctx.author.id):
-        await _deny(
-            ctx,
-            "🚫 Tu n'es pas autorisé à utiliser cette commande. "
-            "Demande à l'administrateur de t'ajouter à la liste blanche via `/admin`.",
-        )
+    authorized, perms = await auth_check.check_discord_authorized(ctx.author.id)
+    if not authorized:
+        await _deny(ctx, auth_check.denial_message(perms))
         return
 
     if db.get_lock() and ctx.author.id != OWNER_DISCORD_ID:
@@ -240,7 +265,8 @@ async def start(ctx: commands.Context, script: str):
 
 @start.autocomplete("script")
 async def start_script_autocomplete(interaction: discord.Interaction, current: str):
-    if not db.is_authorized(interaction.user.id):
+    authorized, _perms = await auth_check.check_discord_authorized(interaction.user.id)
+    if not authorized:
         return []
     scripts = await api_client.get_scripts()
     if not scripts:
@@ -264,12 +290,9 @@ async def stop_command(ctx: commands.Context):
     await _delete_invoking_message(ctx)
     await ctx.defer()
 
-    if not db.is_authorized(ctx.author.id):
-        await _deny(
-            ctx,
-            "🚫 Tu n'es pas autorisé à utiliser cette commande. "
-            "Demande à l'administrateur de t'ajouter à la liste blanche via `/admin`.",
-        )
+    authorized, perms = await auth_check.check_discord_authorized(ctx.author.id)
+    if not authorized:
+        await _deny(ctx, auth_check.denial_message(perms))
         return
 
     status = await api_client.get_status()

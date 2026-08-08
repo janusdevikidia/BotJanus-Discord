@@ -4,6 +4,7 @@ import discord
 
 import database as db
 import api_client
+import auth_check
 import cooldown
 import log_forwarding
 from config import PORTAL_SCRIPT_NAME, LOG_CHANNEL_ID
@@ -31,13 +32,13 @@ def build_status_embed(status: dict) -> discord.Embed:
 
 
 class BaseAuthorizedView(discord.ui.View):
-    """Vue de base qui restreint les clics aux utilisateurs autorisés."""
+    """Vue de base qui restreint les clics aux utilisateurs autorisés (compte Discord lié
+    à un compte Vikidia avec un rôle suffisant, ou administrateur du robot)."""
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not db.is_authorized(interaction.user.id):
-            await interaction.response.send_message(
-                "🚫 Tu n'es pas autorisé à utiliser ce bouton.", ephemeral=True
-            )
+        authorized, perms = await auth_check.check_discord_authorized(interaction.user.id)
+        if not authorized:
+            await interaction.response.send_message(auth_check.denial_message(perms), ephemeral=True)
             return False
         return True
 
@@ -297,7 +298,6 @@ async def _consume_cooldown(interaction: discord.Interaction) -> bool:
 
 def build_admin_embed() -> discord.Embed:
     locked = db.get_lock()
-    whitelist = db.get_whitelist()
 
     embed = discord.Embed(title="🛠 Administration BotJanus Discord", color=discord.Color.blurple())
     embed.add_field(
@@ -305,61 +305,23 @@ def build_admin_embed() -> discord.Embed:
         value="🔒 Verrouillé (toi seul peux lancer/arrêter)" if locked else "🔓 Déverrouillé",
         inline=False,
     )
-    if whitelist:
-        names = "\n".join(f"• {w['username']} (`{w['discord_id']}`)" for w in whitelist)
-    else:
-        names = "*(liste blanche vide)*"
-    embed.add_field(name=f"Liste blanche ({len(whitelist)})", value=names, inline=False)
+    embed.add_field(
+        name="Accès aux commandes",
+        value=(
+            "Géré depuis le dashboard : chacun lie son compte avec `/auth`, puis a besoin "
+            "d'un rôle wiki suffisant (autopatrol, patroller, sysop ou bureaucrat) pour "
+            "pouvoir lancer/arrêter BotJanus."
+        ),
+        inline=False,
+    )
     return embed
 
 
 class AdminView(OwnerOnlyView):
     def __init__(self):
         super().__init__(timeout=300)
-        whitelist = db.get_whitelist()
-        self.add_item(AddWhitelistSelect())
-        self.add_item(RemoveWhitelistSelect(whitelist))
         self.add_item(LockToggleButton(db.get_lock()))
         self.add_item(AdminDeleteButton())
-
-
-class AddWhitelistSelect(discord.ui.UserSelect):
-    def __init__(self):
-        super().__init__(
-            placeholder="➕ Ajouter un utilisateur à la liste blanche",
-            min_values=1,
-            max_values=1,
-            custom_id="admin_add_whitelist",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        user = self.values[0]
-        db.add_to_whitelist(user.id, str(user))
-        await _refresh_admin(interaction)
-
-
-class RemoveWhitelistSelect(discord.ui.Select):
-    def __init__(self, whitelist: list[dict]):
-        if whitelist:
-            options = [
-                discord.SelectOption(label=w["username"], value=w["discord_id"])
-                for w in whitelist[:25]
-            ]
-            disabled = False
-        else:
-            options = [discord.SelectOption(label="(liste blanche vide)", value="__none__")]
-            disabled = True
-        super().__init__(
-            placeholder="➖ Retirer un utilisateur de la liste blanche",
-            options=options,
-            disabled=disabled,
-            custom_id="admin_remove_whitelist",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] != "__none__":
-            db.remove_from_whitelist(self.values[0])
-        await _refresh_admin(interaction)
 
 
 class LockToggleButton(discord.ui.Button):

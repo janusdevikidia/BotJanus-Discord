@@ -70,3 +70,37 @@ async def stop_script() -> tuple[bool, str]:
                 return False, data.get("error", f"Erreur HTTP {resp.status}")
     except Exception as e:
         return False, f"Erreur de connexion au dashboard : {e}"
+
+
+async def start_discord_link(discord_id: int, discord_username: str) -> str | None:
+    """Demande au dashboard un lien de liaison à usage unique (compte Discord -> compte
+    Vikidia), utilisé par la commande /auth. Renvoie l'URL à envoyer à l'utilisateur, ou
+    None en cas d'échec."""
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.post(
+                f"{FLASK_API_URL}/api/discord/link/start", headers=HEADERS,
+                json={"discord_id": discord_id, "discord_username": discord_username},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                return data.get("url")
+    except Exception:
+        return None
+
+
+async def get_discord_permissions(discord_id: int) -> dict | None:
+    """Interroge le dashboard pour savoir si discord_id est lié à un compte wiki et si ce
+    compte a les droits nécessaires (rôle Collaborateur/Admin). None si injoignable."""
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.get(
+                f"{FLASK_API_URL}/api/discord/permissions", headers=HEADERS,
+                params={"discord_id": discord_id},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.json()
+    except Exception:
+        return None

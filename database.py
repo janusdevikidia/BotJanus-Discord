@@ -1,28 +1,20 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
 from contextlib import contextmanager
 
-from config import DB_PATH, OWNER_DISCORD_ID
+from config import DB_PATH
 
 LOCK_KEY = "lock_launch"
 
-
-def is_authorized(user_id: int) -> bool:
-    """L'admin (owner) est toujours autorisé, même s'il n'est pas dans la liste blanche."""
-    return user_id == OWNER_DISCORD_ID or is_whitelisted(user_id)
+# NOTE : l'ancienne liste blanche locale (table whitelist, is_authorized) a été retirée.
+# Les droits sont désormais entièrement gérés côté dashboard Flask : un utilisateur doit
+# lier son compte avec /auth puis disposer d'un rôle suffisant (voir auth_check.py).
+# Seul OWNER_DISCORD_ID (géré directement dans auth_check.py) garde un accès total sans liaison.
 
 
 def init_db() -> None:
     with _connect() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS whitelist (
-                discord_id TEXT PRIMARY KEY,
-                username TEXT,
-                added_at TEXT
-            )
-        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -56,40 +48,10 @@ def _connect():
         conn.close()
 
 
-# --- Liste blanche ---
-
-def is_whitelisted(discord_id: int) -> bool:
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM whitelist WHERE discord_id = ?", (str(discord_id),)
-        ).fetchone()
-        return row is not None
-
-
-def add_to_whitelist(discord_id: int, username: str) -> None:
-    with _connect() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO whitelist (discord_id, username, added_at) VALUES (?, ?, ?)",
-            (str(discord_id), username, datetime.now().isoformat()),
-        )
-        conn.commit()
-
-
-def remove_from_whitelist(discord_id: str) -> None:
-    with _connect() as conn:
-        conn.execute("DELETE FROM whitelist WHERE discord_id = ?", (str(discord_id),))
-        conn.commit()
-
-
-def get_whitelist() -> list[dict]:
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT discord_id, username, added_at FROM whitelist ORDER BY added_at"
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
 # --- Verrou de lancement ---
+# NOTE : ce verrou est local au robot Discord et distinct du verrou "lock_launch" du
+# dashboard web (table settings côté Flask). Les deux ne sont volontairement pas unifiés
+# ici ; à surveiller si tu veux un jour un verrou unique partagé entre les deux surfaces.
 
 def get_lock() -> bool:
     with _connect() as conn:
