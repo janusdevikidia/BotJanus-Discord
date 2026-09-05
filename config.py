@@ -57,3 +57,15 @@ ACTION_COOLDOWN_SECONDS: int = int(os.environ.get("ACTION_COOLDOWN_SECONDS", "10
 # Fréquence (secondes) à laquelle le bot vérifie l'état du script pour
 # mettre à jour son statut Discord ("Regarde 🟢 Actif (script.py)" etc.).
 PRESENCE_REFRESH_SECONDS: int = int(os.environ.get("PRESENCE_REFRESH_SECONDS", "20"))
+
+# --- Stream de logs réactif ---
+# Fréquence de sondage des logs quand au moins un fil est actif (script en cours),
+# et fréquence "de repos" sinon. Le bot bascule automatiquement de l'une à l'autre
+# (voir refresh_log_threads dans bot.py).
+LOG_POLL_ACTIVE_SECONDS: int = int(os.environ.get("LOG_POLL_ACTIVE_SECONDS", "4"))
+LOG_POLL_IDLE_SECONDS: int = int(os.environ.get("LOG_POLL_IDLE_SECONDS", "60"))
+
+# --- File d'attente (/queue) ---
+# Fréquence à laquelle le worker vérifie si un script vient de se terminer
+# pour dépiler et lancer la tâche suivante.
+QUEUE_CHECK_SECONDS: int = int(os.environ.get("QUEUE_CHECK_SECONDS", "5"))

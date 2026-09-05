@@ -121,10 +121,33 @@ async def _fetch_thread(client: discord.Client, thread_id: str) -> discord.Threa
         return None
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if hours or minutes:
+        parts.append(f"{minutes}min")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
 async def poll_log_threads(client: discord.Client) -> None:
-    """À appeler régulièrement (toutes les minutes) : récupère les nouvelles lignes
-    de logs de BotJanus pour chaque fil actif et les poste dans le fil correspondant."""
-    for entry in db.get_log_threads():
+    """À appeler régulièrement : récupère les nouvelles lignes de logs de BotJanus pour
+    chaque fil ACTIF (script en cours de suivi) et les poste dans le fil correspondant.
+    Ne touche pas aux fils déjà marqués terminés (active=0) : ceux-ci restent
+    consultables mais ne sont plus sondés tant qu'ils ne sont pas nettoyés."""
+    active_threads = db.get_log_threads(active_only=True)
+    if not active_threads:
+        return
+
+    # Un seul appel de statut pour tous les fils actifs (il n'y en a de toute façon
+    # normalement qu'un seul à la fois, un script à la fois pouvant tourner).
+    status = await api_client.get_status()
+
+    for entry in active_threads:
         thread = await _fetch_thread(client, entry["thread_id"])
         if thread is None:
             # Le fil a disparu côté Discord (supprimé manuellement, etc.) : on nettoie la DB.
@@ -132,25 +155,42 @@ async def poll_log_threads(client: discord.Client) -> None:
             continue
 
         logs = await api_client.get_logs(limit=LOG_POLL_LIMIT)
-        if not logs:
+        if logs:
+            last_line = entry.get("last_log_line")
+            new_lines = logs
+            if last_line and last_line in logs:
+                # Dernière occurrence connue -> on ne poste que ce qui vient après.
+                idx = len(logs) - 1 - logs[::-1].index(last_line)
+                new_lines = logs[idx + 1:]
+
+            if new_lines:
+                text = "\n".join(new_lines)
+                try:
+                    for chunk in _split_for_discord(text):
+                        await thread.send(f"```\n{chunk}\n```")
+                except discord.HTTPException as e:
+                    log.error("Échec de l'envoi des logs dans le fil %s : %s", entry["thread_id"], e)
+                else:
+                    db.update_log_thread_last_line(entry["thread_id"], logs[-1])
+
+        # Détection de fin d'exécution : le dashboard indique qu'aucun script ne tourne,
+        # ou qu'un autre script a pris le relais entre-temps. On ne conclut rien si le
+        # dashboard est injoignable (status is None) : on retentera au prochain sondage.
+        if status is None:
+            continue
+        finished = (not status.get("running")) or status.get("script_name") != entry["script_name"]
+        if not finished:
             continue
 
-        last_line = entry.get("last_log_line")
-        new_lines = logs
-        if last_line and last_line in logs:
-            # Dernière occurrence connue -> on ne poste que ce qui vient après.
-            idx = len(logs) - 1 - logs[::-1].index(last_line)
-            new_lines = logs[idx + 1:]
-
-        if new_lines:
-            text = "\n".join(new_lines)
-            try:
-                for chunk in _split_for_discord(text):
-                    await thread.send(f"```\n{chunk}\n```")
-            except discord.HTTPException as e:
-                log.error("Échec de l'envoi des logs dans le fil %s : %s", entry["thread_id"], e)
-                continue
-            db.update_log_thread_last_line(entry["thread_id"], logs[-1])
+        created_at = datetime.fromisoformat(entry["created_at"])
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        duration = (datetime.now(timezone.utc) - created_at).total_seconds()
+        try:
+            await thread.send(f"🏁 **{entry['script_name']}** terminé (durée : {_format_duration(duration)}).")
+        except discord.HTTPException:
+            pass
+        db.deactivate_log_thread(entry["thread_id"])
 
 
 async def cleanup_old_threads(client: discord.Client) -> None:

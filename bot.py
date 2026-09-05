@@ -12,13 +12,25 @@ from config import (
     OWNER_DISCORD_ID,
     PRESENCE_REFRESH_SECONDS,
     PORTAL_SCRIPT_NAME,
+    LOG_POLL_ACTIVE_SECONDS,
+    LOG_POLL_IDLE_SECONDS,
+    QUEUE_CHECK_SECONDS,
 )
 import database as db
 import api_client
 import auth_check
 import cooldown
 import log_forwarding
-from views import DashboardView, build_status_embed, AdminView, build_admin_embed, PortalModal
+import queue_manager
+from views import (
+    DashboardView,
+    build_status_embed,
+    AdminView,
+    build_admin_embed,
+    PortalModal,
+    QueueAddView,
+    QueueView,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("botjanus_discord")
@@ -51,12 +63,35 @@ async def refresh_presence():
     await bot.update_presence()
 
 
-@tasks.loop(seconds=60)
+_current_log_poll_interval = LOG_POLL_IDLE_SECONDS
+
+
+@tasks.loop(seconds=LOG_POLL_IDLE_SECONDS)
 async def refresh_log_threads():
-    """Toutes les minutes : poste les nouvelles lignes de logs de BotJanus dans
-    les fils actifs, et supprime les fils de plus de 2 jours."""
+    """Poste les nouvelles lignes de logs de BotJanus dans les fils actifs, poste un
+    récapitulatif quand un script se termine, et supprime les fils de plus de 2 jours.
+
+    Le rythme est dynamique : LOG_POLL_ACTIVE_SECONDS (rapide, quasi temps réel) tant
+    qu'au moins un fil suit un script en cours, LOG_POLL_IDLE_SECONDS (repos) sinon,
+    pour ne pas marteler l'API Flask pour rien."""
+    global _current_log_poll_interval
+
     await log_forwarding.poll_log_threads(bot)
     await log_forwarding.cleanup_old_threads(bot)
+
+    has_active_thread = bool(db.get_log_threads(active_only=True))
+    target = LOG_POLL_ACTIVE_SECONDS if has_active_thread else LOG_POLL_IDLE_SECONDS
+    if target != _current_log_poll_interval:
+        _current_log_poll_interval = target
+        refresh_log_threads.change_interval(seconds=target)
+        log.info("Polling des logs ajusté à %ss (fil actif : %s).", target, has_active_thread)
+
+
+@tasks.loop(seconds=QUEUE_CHECK_SECONDS)
+async def process_queue():
+    """Vérifie régulièrement si un script vient de se libérer pour dépiler et
+    lancer automatiquement la prochaine tâche de la file d'attente (/queue)."""
+    await queue_manager.run_worker_tick(bot)
 
 
 @bot.event
@@ -79,6 +114,9 @@ async def on_ready():
 
     if not refresh_log_threads.is_running():
         refresh_log_threads.start()
+
+    if not process_queue.is_running():
+        process_queue.start()
 
     log.info(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
@@ -235,9 +273,21 @@ async def start(ctx: commands.Context, script: str):
         await _deny(ctx, "⚠️ Impossible de contacter le dashboard Flask.")
         return
     if status.get("running"):
-        await _deny(
-            ctx,
-            f"⚠️ Un script est déjà actif : **{status.get('script_name')}**. Arrête-le d'abord avec `/stop`.",
+        if db.get_queue_disabled():
+            await _deny(
+                ctx,
+                f"⚠️ Un script est déjà actif : **{status.get('script_name')}**. "
+                "La file d'attente est en plus désactivée par l'administrateur : réessaie plus tard.",
+            )
+            return
+        position = db.count_queue() + 1
+        view = QueueAddView(
+            script=script, extra=None, discord_id=ctx.author.id, username=ctx.author.display_name
+        )
+        await ctx.send(
+            f"⚠️ Un script est déjà actif : **{status.get('script_name')}**. "
+            f"Ajouter **{script}** à la file d'attente (position {position}) ?",
+            view=view,
         )
         return
 
@@ -314,6 +364,25 @@ async def stop_command(ctx: commands.Context):
     await log_forwarding.forward_action_message(
         bot, content=content, script_name=script_name, create_thread=False,
     )
+
+
+@bot.hybrid_command(
+    name="queue",
+    description="Affiche et gère la file d'attente de scripts (ajout, retrait, admin)",
+)
+async def queue_command(ctx: commands.Context):
+    await _delete_invoking_message(ctx)
+    await ctx.defer()
+
+    authorized, perms = await auth_check.check_discord_authorized(ctx.author.id)
+    if not authorized:
+        await _deny(ctx, auth_check.denial_message(perms))
+        return
+
+    status = await api_client.get_status()
+    embed = queue_manager.build_queue_embed(status)
+    view = QueueView()
+    await ctx.send(embed=embed, view=view)
 
 
 @bot.hybrid_command(
