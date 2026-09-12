@@ -16,6 +16,8 @@ from config import (
     LOG_POLL_ACTIVE_SECONDS,
     LOG_POLL_IDLE_SECONDS,
     QUEUE_CHECK_SECONDS,
+    VIKIDIA_WATCH_CHANNEL_ID,
+    VIKIDIA_WATCH_INTERVAL_SECONDS,
 )
 import database as db
 import api_client
@@ -23,6 +25,7 @@ import auth_check
 import cooldown
 import log_forwarding
 import queue_manager
+import vikidia_watcher
 from views import (
     DashboardView,
     build_status_embed,
@@ -113,6 +116,14 @@ async def process_queue():
     await queue_manager.run_worker_tick(bot)
 
 
+@tasks.loop(seconds=VIKIDIA_WATCH_INTERVAL_SECONDS)
+async def refresh_vikidia_watch():
+    """Vérifie les tickets en attente, demandes aux administrateurs, alertes, bulletin
+    des administrateurs, suppressions immédiates et votes à traiter sur Vikidia, et
+    notifie les nouveautés dans le salon configuré (VIKIDIA_WATCH_CHANNEL_ID)."""
+    await vikidia_watcher.check_all(bot, VIKIDIA_WATCH_CHANNEL_ID)
+
+
 @bot.event
 async def on_ready():
     db.init_db()
@@ -136,6 +147,10 @@ async def on_ready():
 
     if not process_queue.is_running():
         process_queue.start()
+
+    if VIKIDIA_WATCH_CHANNEL_ID and not refresh_vikidia_watch.is_running():
+        refresh_vikidia_watch.start()
+        log.info("Veille Vikidia démarrée (toutes les %ss).", VIKIDIA_WATCH_INTERVAL_SECONDS)
 
     log.info(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 

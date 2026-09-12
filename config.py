@@ -69,3 +69,16 @@ LOG_POLL_IDLE_SECONDS: int = int(os.environ.get("LOG_POLL_IDLE_SECONDS", "60"))
 # Fréquence à laquelle le worker vérifie si un script vient de se terminer
 # pour dépiler et lancer la tâche suivante.
 QUEUE_CHECK_SECONDS: int = int(os.environ.get("QUEUE_CHECK_SECONDS", "5"))
+
+# --- Veille Vikidia (vikidia_watcher.py) ---
+# Optionnel : si VIKIDIA_WATCH_CHANNEL_ID n'est pas renseigné, la veille est désactivée.
+# Serveur et salon Discord où poster les notifications (tickets, demandes aux admins,
+# alertes, bulletin, suppressions immédiates, votes à traiter).
+_vikidia_watch_guild_id = os.environ.get("VIKIDIA_WATCH_GUILD_ID")
+VIKIDIA_WATCH_GUILD_ID: int | None = int(_vikidia_watch_guild_id) if _vikidia_watch_guild_id else None
+
+_vikidia_watch_channel_id = os.environ.get("VIKIDIA_WATCH_CHANNEL_ID")
+VIKIDIA_WATCH_CHANNEL_ID: int | None = int(_vikidia_watch_channel_id) if _vikidia_watch_channel_id else None
+
+# Fréquence (secondes) de vérification des sources Vikidia surveillées.
+VIKIDIA_WATCH_INTERVAL_SECONDS: int = int(os.environ.get("VIKIDIA_WATCH_INTERVAL_SECONDS", "180"))
