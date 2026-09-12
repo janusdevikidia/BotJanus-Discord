@@ -8,6 +8,7 @@ from config import DB_PATH
 
 LOCK_KEY = "lock_launch"
 QUEUE_LOCK_KEY = "queue_disabled"
+MENTION_LEVELS = ("mean", "normal", "nice")
 
 # NOTE : l'ancienne liste blanche locale (table whitelist, is_authorized) a été retirée.
 # Les droits sont désormais entièrement gérés côté dashboard Flask : un utilisateur doit
@@ -52,6 +53,19 @@ def init_db() -> None:
                 username TEXT NOT NULL,
                 extra_params TEXT,
                 created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS mention_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                level TEXT NOT NULL,
+                text TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS mention_user_overrides (
+                discord_user_id TEXT PRIMARY KEY,
+                level TEXT NOT NULL
             )
         """)
         conn.commit()
@@ -243,3 +257,193 @@ def set_queue_disabled(disabled: bool) -> None:
             (QUEUE_LOCK_KEY, "1" if disabled else "0"),
         )
         conn.commit()
+
+
+# --- Messages de mention automatiques ---
+
+def get_mention_levels() -> list[str]:
+    return ["mean", "normal", "nice"]
+
+
+def add_mention_message(level: str, text: str) -> int:
+    level = level.lower()
+    if level not in get_mention_levels():
+        raise ValueError(f"Niveau de mention invalide : {level}")
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO mention_messages (level, text) VALUES (?, ?)",
+            (level, text.strip()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_mention_messages(level: str) -> list[dict]:
+    level = level.lower()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, level, text FROM mention_messages WHERE level = ? ORDER BY id ASC",
+            (level,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_all_mention_messages() -> dict[str, list[str]]:
+    data = {level: [] for level in get_mention_levels()}
+    with _connect() as conn:
+        rows = conn.execute("SELECT level, text FROM mention_messages ORDER BY id ASC").fetchall()
+        for row in rows:
+            data.setdefault(row["level"], []).append(row["text"])
+    return data
+
+
+def remove_mention_message(level: str, text: str) -> bool:
+    level = level.lower()
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM mention_messages WHERE level = ? AND text = ?",
+            (level, text.strip()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def clear_mention_messages(level: str | None = None) -> int:
+    with _connect() as conn:
+        if level is None:
+            cur = conn.execute("DELETE FROM mention_messages")
+        else:
+            cur = conn.execute("DELETE FROM mention_messages WHERE level = ?", (level.lower(),))
+        conn.commit()
+        return cur.rowcount
+
+
+def set_mention_user_level(discord_user_id: int, level: str) -> None:
+    level = level.lower()
+    if level not in get_mention_levels():
+        raise ValueError(f"Niveau de mention invalide : {level}")
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO mention_user_overrides (discord_user_id, level) VALUES (?, ?)",
+            (str(discord_user_id), level),
+        )
+        conn.commit()
+
+
+def get_mention_user_level(discord_user_id: int) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT level FROM mention_user_overrides WHERE discord_user_id = ?",
+            (str(discord_user_id),),
+        ).fetchone()
+        return row["level"] if row else None
+
+
+def get_mention_user_overrides() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT discord_user_id, level FROM mention_user_overrides ORDER BY discord_user_id ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def clear_mention_user_level(discord_user_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM mention_user_overrides WHERE discord_user_id = ?",
+            (str(discord_user_id),),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# --- Messages de mention automatiques ---
+
+def get_mention_levels() -> list[str]:
+    return list(MENTION_LEVELS)
+
+
+def get_all_mention_messages() -> dict[str, list[str]]:
+    data: dict[str, list[str]] = {level: [] for level in MENTION_LEVELS}
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT level, text FROM mention_messages ORDER BY id ASC"
+        ).fetchall()
+        for row in rows:
+            data.setdefault(row["level"], []).append(row["text"])
+    return data
+
+
+def add_mention_message(level: str, text: str) -> int:
+    level = level.lower()
+    if level not in MENTION_LEVELS:
+        raise ValueError(f"Niveau de mention invalide : {level}")
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO mention_messages (level, text) VALUES (?, ?)",
+            (level, text.strip()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_mention_messages(level: str) -> list[dict]:
+    level = level.lower()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, level, text FROM mention_messages WHERE level = ? ORDER BY id ASC",
+            (level,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def remove_mention_message(level: str, text: str) -> bool:
+    level = level.lower()
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM mention_messages WHERE level = ? AND text = ?",
+            (level, text.strip()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def clear_mention_messages(level: str | None = None) -> int:
+    with _connect() as conn:
+        if level is None:
+            cur = conn.execute("DELETE FROM mention_messages")
+        else:
+            cur = conn.execute("DELETE FROM mention_messages WHERE level = ?", (level.lower(),))
+        conn.commit()
+        return cur.rowcount
+
+
+def set_mention_user_level(discord_user_id: int, level: str) -> None:
+    level = level.lower()
+    if level not in MENTION_LEVELS:
+        raise ValueError(f"Niveau de mention invalide : {level}")
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO mention_user_overrides (discord_user_id, level) VALUES (?, ?)",
+            (str(discord_user_id), level),
+        )
+        conn.commit()
+
+
+def get_mention_user_level(discord_user_id: int) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT level FROM mention_user_overrides WHERE discord_user_id = ?",
+            (str(discord_user_id),),
+        ).fetchone()
+        return row["level"] if row else None
+
+
+def clear_mention_user_level(discord_user_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM mention_user_overrides WHERE discord_user_id = ?",
+            (str(discord_user_id),),
+        )
+        conn.commit()
+        return cur.rowcount > 0

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import time
 
 import discord
@@ -31,6 +32,7 @@ from views import (
     QueueAddView,
     QueueView,
 )
+from mention_manager import MentionManagerView, build_mention_embed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("botjanus_discord")
@@ -39,6 +41,23 @@ intents = discord.Intents.default()
 intents.message_content = True  # requis pour lire !dashboard / !admin
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
+
+
+def _mention_level_for_user(user_id: int) -> str:
+    override = db.get_mention_user_level(user_id)
+    if override:
+        return override
+    return "normal"
+
+
+def _pick_mention_reply(user_id: int) -> str | None:
+    level = _mention_level_for_user(user_id)
+    messages = db.get_mention_messages(level)
+    if not messages and level != "normal":
+        messages = db.get_mention_messages("normal")
+    if not messages:
+        return None
+    return random.choice(messages)["text"]
 
 
 async def _build_presence_text() -> str:
@@ -383,6 +402,42 @@ async def queue_command(ctx: commands.Context):
     embed = queue_manager.build_queue_embed(status)
     view = QueueView()
     await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="mention",
+    description="Panneau d'administration des réponses automatiques lorsque le bot est mentionné",
+)
+async def mention_command(ctx: commands.Context):
+    await _delete_invoking_message(ctx)
+    if ctx.author.id != OWNER_DISCORD_ID:
+        await _deny(ctx, "🚫 Cette commande est réservée à l'administrateur.")
+        return
+
+    await ctx.defer()
+    embed = build_mention_embed()
+    view = MentionManagerView()
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
+    if bot.user is None:
+        await bot.process_commands(message)
+        return
+    if bot.user not in message.mentions:
+        await bot.process_commands(message)
+        return
+
+    reply = _pick_mention_reply(message.author.id)
+    if not reply:
+        await bot.process_commands(message)
+        return
+
+    await message.channel.send(reply)
 
 
 @bot.hybrid_command(
