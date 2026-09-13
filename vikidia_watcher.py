@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import pathlib
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -15,13 +17,17 @@ API_URL = "https://fr.vikidia.org/w/api.php"
 WIKI_BASE = "https://fr.vikidia.org/wiki/"
 PARIS_TZ = ZoneInfo("Europe/Paris")
 
-# Fichier d'état local (dernières pages/sections vues), toujours à côté de ce fichier.
 STATE_PATH = pathlib.Path(__file__).parent / "vikidia_watch_state.json"
 
 HEADERS = {"User-Agent": "BotJanus-VikidiaWatcher/1.0 (bot Discord de Vikidia)"}
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 
-# --- Catégories surveillées : une nouvelle page dans la catégorie = une notification ---
+# Nettoyage HTML et détection des états wikitext
+RE_HTML_TAGS = re.compile(r"<[^>]+>")
+RE_ETAT_FAIT = re.compile(r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*fait\b", re.IGNORECASE)
+RE_ETAT_FERME = re.compile(r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*fermé\b", re.IGNORECASE)
+RE_ETAT_REFUSE = re.compile(r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*refusé?\b", re.IGNORECASE)
+
 CATEGORY_SOURCES = [
     {
         "key": "ticket_en_attente",
@@ -43,8 +49,6 @@ CATEGORY_SOURCES = [
     },
 ]
 
-# --- Pages mensuelles surveillées section par section (une nouvelle section = une notification) ---
-# {month} est remplacé par AAAA_MM (mois courant, heure de Paris) à chaque vérification.
 SECTION_SOURCES = [
     {
         "key": "demandes_admins",
@@ -67,6 +71,12 @@ SECTION_SOURCES = [
 ]
 
 
+def _clean_title(text: str) -> str:
+    """Supprime les balises HTML et décode les entités (ex: <span> et &amp;)."""
+    cleaned = RE_HTML_TAGS.sub("", text)
+    return html.unescape(cleaned).strip()
+
+
 def _current_month_slug() -> str:
     now = datetime.now(PARIS_TZ)
     return f"{now.year}_{now.month:02d}"
@@ -76,7 +86,7 @@ def _page_url(title: str) -> str:
     return WIKI_BASE + title.replace(" ", "_")
 
 
-# --- Persistance de l'état (simple fichier JSON, pas besoin d'une vraie base pour ce module) ---
+# --- Persistance de l'état ---
 
 def _load_state() -> dict:
     if not STATE_PATH.exists():
@@ -95,10 +105,21 @@ def _save_state(state: dict) -> None:
         log.error("Impossible d'écrire l'état de vikidia_watcher : %s", e)
 
 
-# --- Appels à l'API MediaWiki de Vikidia ---
+def _normalize_state_key(state: dict, key: str) -> dict[str, dict]:
+    """Migration Rétrocompatible : transforme une liste simple de titres en dict enrichi."""
+    raw = state.get(key)
+    if not raw:
+        return {}
+    if isinstance(raw, list):
+        return {title: {"msg_id": None, "status": "active"} for title in raw}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+# --- Requêtes API MediaWiki ---
 
 async def _get_category_members(session: aiohttp.ClientSession, category_title: str) -> list[str] | None:
-    """Renvoie les titres des pages actuellement dans la catégorie, ou None si l'appel a échoué."""
     params = {
         "action": "query",
         "list": "categorymembers",
@@ -118,10 +139,42 @@ async def _get_category_members(session: aiohttp.ClientSession, category_title: 
         return None
 
 
-async def _get_top_level_sections(session: aiohttp.ClientSession, page_title: str) -> list[str] | None:
-    """Renvoie les titres des sections de premier niveau (== Titre ==) d'une page.
-    Renvoie None si la page est injoignable ou n'existe pas encore (ex : le mois n'a pas
-    encore été créé sur le wiki) — ce n'est pas traité comme une erreur bloquante."""
+async def _page_exists(session: aiohttp.ClientSession, title: str) -> bool:
+    params = {"action": "query", "titles": title, "format": "json"}
+    try:
+        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+            if resp.status != 200:
+                return True
+            data = await resp.json()
+            pages = data.get("query", {}).get("pages", {})
+            for p_id, p_info in pages.items():
+                if p_id == "-1" or "missing" in p_info:
+                    return False
+            return True
+    except Exception as e:
+        log.warning("Échec de vérification d'existence de la page %s : %s", title, e)
+        return True
+
+
+async def _get_page_wikitext(session: aiohttp.ClientSession, title: str) -> str | None:
+    params = {
+        "action": "parse",
+        "page": title,
+        "prop": "wikitext",
+        "format": "json",
+    }
+    try:
+        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            return data.get("parse", {}).get("wikitext", {}).get("*")
+    except Exception as e:
+        log.warning("Échec de la récupération du wikitext de %s : %s", title, e)
+        return None
+
+
+async def _get_sections_details(session: aiohttp.ClientSession, page_title: str) -> list[dict] | None:
     params = {
         "action": "parse",
         "page": page_title,
@@ -136,13 +189,40 @@ async def _get_top_level_sections(session: aiohttp.ClientSession, page_title: st
             if "error" in data:
                 return None
             sections = data.get("parse", {}).get("sections", [])
-            return [s["line"] for s in sections if s.get("toclevel") == 1]
+            return [
+                {
+                    "index": s["index"],
+                    "title": _clean_title(s["line"]),
+                    "anchor": s.get("anchor", _clean_title(s["line"]).replace(" ", "_")),
+                }
+                for s in sections
+                if s.get("toclevel") == 1
+            ]
     except Exception as e:
         log.warning("Échec de la requête sections %s : %s", page_title, e)
         return None
 
 
-# --- Envoi Discord ---
+async def _get_section_wikitext(session: aiohttp.ClientSession, page_title: str, section_index: str) -> str | None:
+    params = {
+        "action": "parse",
+        "page": page_title,
+        "section": section_index,
+        "prop": "wikitext",
+        "format": "json",
+    }
+    try:
+        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            return data.get("parse", {}).get("wikitext", {}).get("*")
+    except Exception as e:
+        log.warning("Échec de la récupération du wikitext de la section %s (%s) : %s", section_index, page_title, e)
+        return None
+
+
+# --- Actions Discord ---
 
 async def _get_channel(client: discord.Client, channel_id: int) -> discord.abc.Messageable | None:
     channel = client.get_channel(channel_id)
@@ -157,22 +237,29 @@ async def _get_channel(client: discord.Client, channel_id: int) -> discord.abc.M
 
 async def _notify(
     channel: discord.abc.Messageable, label: str, title: str, url: str, color: discord.Color
-) -> None:
+) -> int | None:
     embed = discord.Embed(title=label, description=f"[{title}]({url})", color=color)
     try:
-        await channel.send(embed=embed)
+        msg = await channel.send(embed=embed)
+        return msg.id
     except discord.HTTPException as e:
         log.error("Échec de l'envoi de la notification Vikidia : %s", e)
+        return None
 
 
-# --- Vérification principale ---
+async def _add_reaction(channel: discord.abc.Messageable, msg_id: int | None, emoji: str) -> None:
+    if not msg_id:
+        return
+    try:
+        msg = await channel.fetch_message(msg_id)
+        await msg.add_reaction(emoji)
+    except discord.HTTPException as e:
+        log.error("Impossible d'ajouter la réaction %s au message %s : %s", emoji, msg_id, e)
+
+
+# --- Fonction principale de vérification ---
 
 async def check_all(client: discord.Client, channel_id: int) -> None:
-    """À appeler périodiquement (voir VIKIDIA_WATCH_INTERVAL_SECONDS). Compare l'état actuel
-    de chaque source suivie à l'état enregistré et notifie les nouveautés dans le salon
-    configuré. La toute première fois qu'une source est vue (démarrage initial, ou nouveau
-    mois pour les pages mensuelles), son état est simplement enregistré sans notification,
-    pour ne pas spammer avec tout l'historique déjà présent."""
     channel = await _get_channel(client, channel_id)
     if channel is None:
         return
@@ -180,41 +267,114 @@ async def check_all(client: discord.Client, channel_id: int) -> None:
     state = _load_state()
 
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        # --- Catégories ---
+        # --- 1. Traitement des Catégories ---
         for source in CATEGORY_SOURCES:
-            current = await _get_category_members(session, source["title"])
-            if current is None:
+            key = source["key"]
+            current_members = await _get_category_members(session, source["title"])
+            if current_members is None:
                 continue
 
-            key = source["key"]
-            if key in state:
-                known = set(state[key])
-                for title in current:
-                    if title not in known:
-                        await _notify(channel, source["label"], title, _page_url(title), source["color"])
-            state[key] = current
+            known = _normalize_state_key(state, key)
+            current_set = set(current_members)
 
-        # --- Pages mensuelles par section ---
+            # Démarrage initial : enregistrement sans notifier
+            if key not in state:
+                state[key] = {title: {"msg_id": None, "status": "active"} for title in current_members}
+                continue
+
+            # Nouveautés dans la catégorie
+            for title in current_members:
+                if title not in known:
+                    msg_id = await _notify(channel, source["label"], title, _page_url(title), source["color"])
+                    known[title] = {"msg_id": msg_id, "status": "active"}
+
+            # Mise à jour des éléments suivis
+            for title, info in list(known.items()):
+                if info.get("status") != "active":
+                    continue
+
+                msg_id = info.get("msg_id")
+
+                if key == "ticket_en_attente":
+                    exists = await _page_exists(session, title)
+                    if not exists:
+                        await _add_reaction(channel, msg_id, "🗑️")
+                        info["status"] = "deleted"
+                    else:
+                        wikitext = await _get_page_wikitext(session, title)
+                        if wikitext:
+                            if RE_ETAT_FERME.search(wikitext):
+                                await _add_reaction(channel, msg_id, "✅")
+                                info["status"] = "done"
+                            elif RE_ETAT_REFUSE.search(wikitext):
+                                await _add_reaction(channel, msg_id, "🗑️")
+                                info["status"] = "refused"
+                            elif title not in current_set:
+                                await _add_reaction(channel, msg_id, "✅")
+                                info["status"] = "done"
+                        elif title not in current_set:
+                            await _add_reaction(channel, msg_id, "✅")
+                            info["status"] = "done"
+                else:
+                    if title not in current_set:
+                        await _add_reaction(channel, msg_id, "✅")
+                        info["status"] = "done"
+
+            state[key] = known
+
+        # --- 2. Traitement des Pages mensuelles par section ---
         month = _current_month_slug()
         for source in SECTION_SOURCES:
             page_title = source["title_template"].format(month=month)
-            current = await _get_top_level_sections(session, page_title)
-            if current is None:
+            sections = await _get_sections_details(session, page_title)
+            if sections is None:
                 continue
 
             key = f"{source['key']}:{month}"
-            if key in state:
-                known = set(state[key])
-                for section_title in current:
-                    if section_title not in known:
-                        anchor = section_title.replace(" ", "_")
-                        await _notify(
-                            channel,
-                            source["label"],
-                            section_title,
-                            f"{_page_url(page_title)}#{anchor}",
-                            source["color"],
-                        )
-            state[key] = current
+            known = _normalize_state_key(state, key)
+            current_map = {s["title"]: (s["index"], s["anchor"]) for s in sections}
+
+            # Démarrage initial / Nouveau mois : enregistrement sans notifier
+            if key not in state:
+                state[key] = {s["title"]: {"msg_id": None, "status": "active"} for s in sections}
+                continue
+
+            # Nouvelles sections apparues
+            for s in sections:
+                s_title = s["title"]
+                s_anchor = s["anchor"]
+                if s_title not in known:
+                    msg_id = await _notify(
+                        channel,
+                        source["label"],
+                        s_title,
+                        f"{_page_url(page_title)}#{s_anchor}",
+                        source["color"],
+                    )
+                    known[s_title] = {"msg_id": msg_id, "status": "active"}
+
+            # Mise à jour des sections suivies
+            for s_title, info in list(known.items()):
+                if info.get("status") != "active":
+                    continue
+
+                msg_id = info.get("msg_id")
+
+                if s_title not in current_map:
+                    # Section supprimée/annulée
+                    await _add_reaction(channel, msg_id, "🗑️")
+                    info["status"] = "deleted"
+                else:
+                    sec_index, _ = current_map[s_title]
+                    sec_text = await _get_section_wikitext(session, page_title, sec_index)
+                    if sec_text:
+                        if RE_ETAT_FAIT.search(sec_text):
+                            await _add_reaction(channel, msg_id, "✅")
+                            info["status"] = "done"
+                        elif RE_ETAT_REFUSE.search(sec_text):
+                            await _add_reaction(channel, msg_id, "🗑️")
+                            info["status"] = "refused"
+
+            state[key] = known
 
     _save_state(state)
