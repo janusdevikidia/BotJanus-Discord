@@ -13,62 +13,128 @@ import discord
 
 log = logging.getLogger("botjanus_discord.vikidia_watcher")
 
-API_URL = "https://fr.vikidia.org/w/api.php"
-WIKI_BASE = "https://fr.vikidia.org/wiki/"
 PARIS_TZ = ZoneInfo("Europe/Paris")
-
 STATE_PATH = pathlib.Path(__file__).parent / "vikidia_watch_state.json"
-
 HEADERS = {"User-Agent": "BotJanus-VikidiaWatcher/1.0 (bot Discord de Vikidia)"}
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 # Nettoyage HTML et détection des états wikitext
 RE_HTML_TAGS = re.compile(r"<[^>]+>")
-RE_ETAT_FAIT = re.compile(r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*fait\b", re.IGNORECASE)
-RE_ETAT_FERME = re.compile(r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*fermé\b", re.IGNORECASE)
-RE_ETAT_REFUSE = re.compile(r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*refusé?\b", re.IGNORECASE)
 
+# Validation : Fait / Accepté / Closed / Hecho / Done
+RE_ETAT_FAIT = re.compile(
+    r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*(fait|fermé)"
+    r"|status\s*=\s*(?:<!--[\s\S]*?-->\s*)*(done|accepted)"
+    r"|\{\{(?:hecho|done|accepted)\}\}",
+    re.IGNORECASE,
+)
+
+# Refus / Rejet / Non fait
+RE_ETAT_REFUSE = re.compile(
+    r"é?tat\s*=\s*(?:<!--[\s\S]*?-->\s*)*refusé?"
+    r"|status\s*=\s*(?:<!--[\s\S]*?-->\s*)*(refused|rejected)"
+    r"|\{\{(?:no hecho|rechazado|refused|rejected)\}\}",
+    re.IGNORECASE,
+)
+
+# --- Catégories surveillées ---
 CATEGORY_SOURCES = [
+    # FR
     {
         "key": "ticket_en_attente",
+        "domain": "fr.vikidia.org",
         "title": "Catégorie:Ticket en attente",
-        "label": "🎫 Nouveau ticket en attente",
+        "label": "🎫 [FR] Nouveau ticket en attente",
         "color": discord.Color.gold(),
     },
     {
         "key": "suppression_immediate",
+        "domain": "fr.vikidia.org",
         "title": "Catégorie:Suppression immédiate",
-        "label": "🗑️ Nouvelle demande de suppression immédiate",
+        "label": "🗑️ [FR] Nouvelle demande de suppression immédiate",
         "color": discord.Color.red(),
     },
     {
         "key": "vote_a_traiter",
+        "domain": "fr.vikidia.org",
         "title": "Catégorie:Vote à traiter",
-        "label": "🗳️ Nouveau vote à traiter",
+        "label": "🗳️ [FR] Nouveau vote à traiter",
         "color": discord.Color.blurple(),
+    },
+    # ES
+    {
+        "key": "es_borrar",
+        "domain": "es.vikidia.org",
+        "title": "Categoría:Vikidia:Borrar",
+        "label": "🗑️ [ES] Nueva solicitud de borrado",
+        "color": discord.Color.red(),
+    },
+    # EN
+    {
+        "key": "en_speedy_deletion",
+        "domain": "en.vikidia.org",
+        "title": "Category:Pages_tagged_for_speedy_deletion",
+        "label": "🗑️ [EN] New speedy deletion request",
+        "color": discord.Color.red(),
+    },
+    {
+        "key": "en_regular_deletion",
+        "domain": "en.vikidia.org",
+        "title": "Category:Pages_proposed_for_regular_deletion",
+        "label": "🗑️ [EN] New proposed deletion request",
+        "color": discord.Color.dark_red(),
     },
 ]
 
+# --- Pages surveillées section par section ---
 SECTION_SOURCES = [
+    # FR
     {
         "key": "demandes_admins",
+        "domain": "fr.vikidia.org",
         "title_template": "Vikidia:Demandes aux administrateurs/{month}",
-        "label": "📮 Nouvelle demande aux administrateurs",
+        "label": "📮 [FR] Nouvelle demande aux administrateurs",
         "color": discord.Color.orange(),
     },
     {
         "key": "alerte",
+        "domain": "fr.vikidia.org",
         "title_template": "Vikidia:Alerte/{month}",
-        "label": "🚨 Nouvelle alerte",
+        "label": "🚨 [FR] Nouvelle alerte",
         "color": discord.Color.dark_red(),
     },
     {
         "key": "bulletin_admins",
+        "domain": "fr.vikidia.org",
         "title_template": "Vikidia:Bulletin des administrateurs/{month}",
-        "label": "📋 Nouveau message au bulletin des administrateurs",
+        "label": "📋 [FR] Nouveau message au bulletin des administrateurs",
         "color": discord.Color.teal(),
     },
+    # ES (sans date)
+    {
+        "key": "es_demandes_admins",
+        "domain": "es.vikidia.org",
+        "title_template": "Vikidia:Solicitudes/Administradores",
+        "label": "📮 [ES] Nueva solicitud a los administradores",
+        "color": discord.Color.orange(),
+    },
+    # EN (par année)
+    {
+        "key": "en_demandes_admins",
+        "domain": "en.vikidia.org",
+        "title_template": "Vikidia:Requests/Administrators/{year}",
+        "label": "📮 [EN] New request for administrators",
+        "color": discord.Color.orange(),
+    },
 ]
+
+
+def _api_url(domain: str) -> str:
+    return f"https://{domain}/w/api.php"
+
+
+def _page_url(domain: str, title: str) -> str:
+    return f"https://{domain}/wiki/" + title.replace(" ", "_")
 
 
 def _clean_title(text: str) -> str:
@@ -77,13 +143,9 @@ def _clean_title(text: str) -> str:
     return html.unescape(cleaned).strip()
 
 
-def _current_month_slug() -> str:
+def _get_time_slugs() -> tuple[str, str]:
     now = datetime.now(PARIS_TZ)
-    return f"{now.year}_{now.month:02d}"
-
-
-def _page_url(title: str) -> str:
-    return WIKI_BASE + title.replace(" ", "_")
+    return f"{now.year}_{now.month:02d}", str(now.year)
 
 
 # --- Persistance de l'état ---
@@ -106,7 +168,6 @@ def _save_state(state: dict) -> None:
 
 
 def _normalize_state_key(state: dict, key: str) -> dict[str, dict]:
-    """Migration Rétrocompatible : transforme une liste simple de titres en dict enrichi."""
     raw = state.get(key)
     if not raw:
         return {}
@@ -119,7 +180,7 @@ def _normalize_state_key(state: dict, key: str) -> dict[str, dict]:
 
 # --- Requêtes API MediaWiki ---
 
-async def _get_category_members(session: aiohttp.ClientSession, category_title: str) -> list[str] | None:
+async def _get_category_members(session: aiohttp.ClientSession, domain: str, category_title: str) -> list[str] | None:
     params = {
         "action": "query",
         "list": "categorymembers",
@@ -128,21 +189,21 @@ async def _get_category_members(session: aiohttp.ClientSession, category_title: 
         "format": "json",
     }
     try:
-        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+        async with session.get(_api_url(domain), params=params, headers=HEADERS) as resp:
             if resp.status != 200:
                 return None
             data = await resp.json()
             members = data.get("query", {}).get("categorymembers", [])
             return [m["title"] for m in members]
     except Exception as e:
-        log.warning("Échec de la requête catégorie %s : %s", category_title, e)
+        log.warning("Échec de la requête catégorie %s (%s) : %s", category_title, domain, e)
         return None
 
 
-async def _page_exists(session: aiohttp.ClientSession, title: str) -> bool:
+async def _page_exists(session: aiohttp.ClientSession, domain: str, title: str) -> bool:
     params = {"action": "query", "titles": title, "format": "json"}
     try:
-        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+        async with session.get(_api_url(domain), params=params, headers=HEADERS) as resp:
             if resp.status != 200:
                 return True
             data = await resp.json()
@@ -152,11 +213,11 @@ async def _page_exists(session: aiohttp.ClientSession, title: str) -> bool:
                     return False
             return True
     except Exception as e:
-        log.warning("Échec de vérification d'existence de la page %s : %s", title, e)
+        log.warning("Échec de vérification d'existence de la page %s (%s) : %s", title, domain, e)
         return True
 
 
-async def _get_page_wikitext(session: aiohttp.ClientSession, title: str) -> str | None:
+async def _get_page_wikitext(session: aiohttp.ClientSession, domain: str, title: str) -> str | None:
     params = {
         "action": "parse",
         "page": title,
@@ -164,17 +225,17 @@ async def _get_page_wikitext(session: aiohttp.ClientSession, title: str) -> str 
         "format": "json",
     }
     try:
-        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+        async with session.get(_api_url(domain), params=params, headers=HEADERS) as resp:
             if resp.status != 200:
                 return None
             data = await resp.json()
             return data.get("parse", {}).get("wikitext", {}).get("*")
     except Exception as e:
-        log.warning("Échec de la récupération du wikitext de %s : %s", title, e)
+        log.warning("Échec de la récupération du wikitext de %s (%s) : %s", title, domain, e)
         return None
 
 
-async def _get_sections_details(session: aiohttp.ClientSession, page_title: str) -> list[dict] | None:
+async def _get_sections_details(session: aiohttp.ClientSession, domain: str, page_title: str) -> list[dict] | None:
     params = {
         "action": "parse",
         "page": page_title,
@@ -182,7 +243,7 @@ async def _get_sections_details(session: aiohttp.ClientSession, page_title: str)
         "format": "json",
     }
     try:
-        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+        async with session.get(_api_url(domain), params=params, headers=HEADERS) as resp:
             if resp.status != 200:
                 return None
             data = await resp.json()
@@ -199,11 +260,11 @@ async def _get_sections_details(session: aiohttp.ClientSession, page_title: str)
                 if s.get("toclevel") == 1
             ]
     except Exception as e:
-        log.warning("Échec de la requête sections %s : %s", page_title, e)
+        log.warning("Échec de la requête sections %s (%s) : %s", page_title, domain, e)
         return None
 
 
-async def _get_section_wikitext(session: aiohttp.ClientSession, page_title: str, section_index: str) -> str | None:
+async def _get_section_wikitext(session: aiohttp.ClientSession, domain: str, page_title: str, section_index: str) -> str | None:
     params = {
         "action": "parse",
         "page": page_title,
@@ -212,13 +273,13 @@ async def _get_section_wikitext(session: aiohttp.ClientSession, page_title: str,
         "format": "json",
     }
     try:
-        async with session.get(API_URL, params=params, headers=HEADERS) as resp:
+        async with session.get(_api_url(domain), params=params, headers=HEADERS) as resp:
             if resp.status != 200:
                 return None
             data = await resp.json()
             return data.get("parse", {}).get("wikitext", {}).get("*")
     except Exception as e:
-        log.warning("Échec de la récupération du wikitext de la section %s (%s) : %s", section_index, page_title, e)
+        log.warning("Échec de la récupération du wikitext de la section %s (%s, %s) : %s", section_index, page_title, domain, e)
         return None
 
 
@@ -236,9 +297,18 @@ async def _get_channel(client: discord.Client, channel_id: int) -> discord.abc.M
 
 
 async def _notify(
-    channel: discord.abc.Messageable, label: str, title: str, url: str, color: discord.Color
+    channel: discord.abc.Messageable,
+    label: str,
+    title: str,
+    url: str,
+    color: discord.Color,
+    extra_text: str | None = None,
 ) -> int | None:
-    embed = discord.Embed(title=label, description=f"[{title}]({url})", color=color)
+    description = f"[{title}]({url})"
+    if extra_text:
+        description += f"\n{extra_text}"
+
+    embed = discord.Embed(title=label, description=description, color=color)
     try:
         msg = await channel.send(embed=embed)
         return msg.id
@@ -257,7 +327,7 @@ async def _add_reaction(channel: discord.abc.Messageable, msg_id: int | None, em
         log.error("Impossible d'ajouter la réaction %s au message %s : %s", emoji, msg_id, e)
 
 
-# --- Fonction principale de vérification ---
+# --- Fonction principale ---
 
 async def check_all(client: discord.Client, channel_id: int) -> None:
     channel = await _get_channel(client, channel_id)
@@ -265,30 +335,39 @@ async def check_all(client: discord.Client, channel_id: int) -> None:
         return
 
     state = _load_state()
+    month_slug, year_slug = _get_time_slugs()
 
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
         # --- 1. Traitement des Catégories ---
         for source in CATEGORY_SOURCES:
             key = source["key"]
-            current_members = await _get_category_members(session, source["title"])
+            domain = source["domain"]
+            current_members = await _get_category_members(session, domain, source["title"])
             if current_members is None:
                 continue
 
             known = _normalize_state_key(state, key)
             current_set = set(current_members)
 
-            # Démarrage initial : enregistrement sans notifier
             if key not in state:
                 state[key] = {title: {"msg_id": None, "status": "active"} for title in current_members}
                 continue
 
-            # Nouveautés dans la catégorie
             for title in current_members:
                 if title not in known:
-                    msg_id = await _notify(channel, source["label"], title, _page_url(title), source["color"])
+                    count = len(current_members)
+                    plural = "s" if count > 1 else ""
+                    count_text = f"📊 Il reste **{count}** page{plural} dans la catégorie."
+                    msg_id = await _notify(
+                        channel,
+                        source["label"],
+                        title,
+                        _page_url(domain, title),
+                        source["color"],
+                        extra_text=count_text,
+                    )
                     known[title] = {"msg_id": msg_id, "status": "active"}
 
-            # Mise à jour des éléments suivis
             for title, info in list(known.items()):
                 if info.get("status") != "active":
                     continue
@@ -296,18 +375,18 @@ async def check_all(client: discord.Client, channel_id: int) -> None:
                 msg_id = info.get("msg_id")
 
                 if key == "ticket_en_attente":
-                    exists = await _page_exists(session, title)
+                    exists = await _page_exists(session, domain, title)
                     if not exists:
                         await _add_reaction(channel, msg_id, "🗑️")
                         info["status"] = "deleted"
                     else:
-                        wikitext = await _get_page_wikitext(session, title)
+                        wikitext = await _get_page_wikitext(session, domain, title)
                         if wikitext:
-                            if RE_ETAT_FERME.search(wikitext):
+                            if RE_ETAT_FAIT.search(wikitext):
                                 await _add_reaction(channel, msg_id, "✅")
                                 info["status"] = "done"
                             elif RE_ETAT_REFUSE.search(wikitext):
-                                await _add_reaction(channel, msg_id, "🗑️")
+                                await _add_reaction(channel, msg_id, "❌")
                                 info["status"] = "refused"
                             elif title not in current_set:
                                 await _add_reaction(channel, msg_id, "✅")
@@ -322,24 +401,29 @@ async def check_all(client: discord.Client, channel_id: int) -> None:
 
             state[key] = known
 
-        # --- 2. Traitement des Pages mensuelles par section ---
-        month = _current_month_slug()
+        # --- 2. Traitement des Pages par section ---
         for source in SECTION_SOURCES:
-            page_title = source["title_template"].format(month=month)
-            sections = await _get_sections_details(session, page_title)
+            domain = source["domain"]
+            page_title = source["title_template"].format(month=month_slug, year=year_slug)
+
+            sections = await _get_sections_details(session, domain, page_title)
             if sections is None:
                 continue
 
-            key = f"{source['key']}:{month}"
+            if "{month}" in source["title_template"]:
+                key = f"{source['key']}:{month_slug}"
+            elif "{year}" in source["title_template"]:
+                key = f"{source['key']}:{year_slug}"
+            else:
+                key = source["key"]
+
             known = _normalize_state_key(state, key)
             current_map = {s["title"]: (s["index"], s["anchor"]) for s in sections}
 
-            # Démarrage initial / Nouveau mois : enregistrement sans notifier
             if key not in state:
                 state[key] = {s["title"]: {"msg_id": None, "status": "active"} for s in sections}
                 continue
 
-            # Nouvelles sections apparues
             for s in sections:
                 s_title = s["title"]
                 s_anchor = s["anchor"]
@@ -348,12 +432,11 @@ async def check_all(client: discord.Client, channel_id: int) -> None:
                         channel,
                         source["label"],
                         s_title,
-                        f"{_page_url(page_title)}#{s_anchor}",
+                        f"{_page_url(domain, page_title)}#{s_anchor}",
                         source["color"],
                     )
                     known[s_title] = {"msg_id": msg_id, "status": "active"}
 
-            # Mise à jour des sections suivies
             for s_title, info in list(known.items()):
                 if info.get("status") != "active":
                     continue
@@ -361,20 +444,56 @@ async def check_all(client: discord.Client, channel_id: int) -> None:
                 msg_id = info.get("msg_id")
 
                 if s_title not in current_map:
-                    # Section supprimée/annulée
                     await _add_reaction(channel, msg_id, "🗑️")
                     info["status"] = "deleted"
                 else:
                     sec_index, _ = current_map[s_title]
-                    sec_text = await _get_section_wikitext(session, page_title, sec_index)
+                    sec_text = await _get_section_wikitext(session, domain, page_title, sec_index)
                     if sec_text:
                         if RE_ETAT_FAIT.search(sec_text):
                             await _add_reaction(channel, msg_id, "✅")
                             info["status"] = "done"
                         elif RE_ETAT_REFUSE.search(sec_text):
-                            await _add_reaction(channel, msg_id, "🗑️")
+                            await _add_reaction(channel, msg_id, "❌")
                             info["status"] = "refused"
 
             state[key] = known
 
     _save_state(state)
+
+
+# --- Diagnostic de santé (utilisé par la commande Discord /vikidia_status) ---
+
+async def get_status_report() -> tuple[int, int, list[str]]:
+    month_slug, year_slug = _get_time_slugs()
+    results: list[str] = []
+    total_ok = 0
+    total_sources = len(CATEGORY_SOURCES) + len(SECTION_SOURCES)
+
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        for src in CATEGORY_SOURCES:
+            members = await _get_category_members(session, src["domain"], src["title"])
+            if members is not None:
+                total_ok += 1
+                count = len(members)
+                plural = "s" if count > 1 else ""
+                results.append(
+                    f"✅ **[{src['domain']}]** `Catégorie` — `{src['title']}` ({count} élément{plural})"
+                )
+            else:
+                results.append(f"❌ **[{src['domain']}]** `Catégorie` — `{src['title']}` — Erreur d'accès")
+
+        for src in SECTION_SOURCES:
+            page_title = src["title_template"].format(month=month_slug, year=year_slug)
+            sections = await _get_sections_details(session, src["domain"], page_title)
+            if sections is not None:
+                total_ok += 1
+                count = len(sections)
+                plural = "s" if count > 1 else ""
+                results.append(
+                    f"✅ **[{src['domain']}]** `Page à sections` — `{page_title}` ({count} section{plural})"
+                )
+            else:
+                results.append(f"❌ **[{src['domain']}]** `Page à sections` — `{page_title}` — Injoignable")
+
+    return total_ok, total_sources, results

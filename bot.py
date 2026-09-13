@@ -72,7 +72,6 @@ async def _build_presence_text() -> str:
     return "🔴 Arrêté"
 
 
-# Nouvelle fonction attachée à l'instance de bot pour forcer l'actualisation
 async def update_presence() -> None:
     text = await _build_presence_text()
     await bot.change_presence(activity=discord.CustomActivity(name=text, state=text))
@@ -91,11 +90,7 @@ _current_log_poll_interval = LOG_POLL_IDLE_SECONDS
 @tasks.loop(seconds=LOG_POLL_IDLE_SECONDS)
 async def refresh_log_threads():
     """Poste les nouvelles lignes de logs de BotJanus dans les fils actifs, poste un
-    récapitulatif quand un script se termine, et supprime les fils de plus de 2 jours.
-
-    Le rythme est dynamique : LOG_POLL_ACTIVE_SECONDS (rapide, quasi temps réel) tant
-    qu'au moins un fil suit un script en cours, LOG_POLL_IDLE_SECONDS (repos) sinon,
-    pour ne pas marteler l'API Flask pour rien."""
+    récapitulatif quand un script se termine, et supprime les fils de plus de 2 jours."""
     global _current_log_poll_interval
 
     await log_forwarding.poll_log_threads(bot)
@@ -118,9 +113,9 @@ async def process_queue():
 
 @tasks.loop(seconds=VIKIDIA_WATCH_INTERVAL_SECONDS)
 async def refresh_vikidia_watch():
-    """Vérifie les tickets en attente, demandes aux administrateurs, alertes, bulletin
-    des administrateurs, suppressions immédiates et votes à traiter sur Vikidia, et
-    notifie les nouveautés dans le salon configuré (VIKIDIA_WATCH_CHANNEL_ID)."""
+    """Vérifie les tickets, demandes aux administrateurs, alertes, bulletins et
+    demandes de suppression sur les wikis Vikidia (FR, ES, EN) et notifie les
+    nouveautés dans le salon configuré."""
     await vikidia_watcher.check_all(bot, VIKIDIA_WATCH_CHANNEL_ID)
 
 
@@ -192,7 +187,6 @@ async def _consume_cooldown(ctx: commands.Context) -> bool:
     description="Lie ton compte Discord à ton compte Vikidia (nécessaire pour lancer/arrêter le robot)",
 )
 async def auth_command(interaction: discord.Interaction):
-    # En commande slash, le premier paramètre est un discord.Interaction (et plus un commands.Context)
     await interaction.response.defer(ephemeral=True)
 
     url = await api_client.start_discord_link(interaction.user.id, str(interaction.user))
@@ -211,15 +205,14 @@ async def auth_command(interaction: discord.Interaction):
     )
     
     await interaction.followup.send(message, ephemeral=True)
-    
+
+
 @bot.hybrid_command(
     name="dashboard",
     description="Affiche l'état du robot Vikidia et permet de le lancer/arrêter",
 )
 async def dashboard(ctx: commands.Context):
     await _delete_invoking_message(ctx)
-    # Ack immédiat : l'appel vers PythonAnywhere peut dépasser les 3s
-    # tolérées par Discord avant qu'il considère l'interaction comme expirée.
     await ctx.defer()
 
     authorized, perms = await auth_check.check_discord_authorized(ctx.author.id)
@@ -271,7 +264,6 @@ async def start(ctx: commands.Context, script: str):
         await _deny(ctx, "🔒 Le lancement est verrouillé par l'administrateur.")
         return
 
-    # portal.py nécessite des paramètres supplémentaires : formulaire disponible uniquement en slash.
     if script == PORTAL_SCRIPT_NAME:
         if ctx.interaction is not None and not ctx.interaction.response.is_done():
             if not await _consume_cooldown(ctx):
@@ -331,12 +323,11 @@ async def start(ctx: commands.Context, script: str):
     success, message = await api_client.start_script(script, username=ctx.author.display_name)
     if success:
         content = f"✅ **{ctx.author.display_name}** a lancé **{script}**."
-        await bot.update_presence()  # Actualisation instantanée
+        await bot.update_presence()
     else:
         content = f"⚠️ Échec du lancement : {message}"
     await ctx.send(content)
 
-    # Transfert dans le salon de logs, avec fil de suivi si le lancement a réussi.
     await log_forwarding.forward_action_message(
         bot, content=content, script_name=script, create_thread=success,
     )
@@ -389,12 +380,11 @@ async def stop_command(ctx: commands.Context):
     success, message = await api_client.stop_script()
     if success:
         content = f"🛑 **{ctx.author.display_name}** a arrêté **{script_name}**."
-        await bot.update_presence()  # Actualisation instantanée
+        await bot.update_presence()
     else:
         content = f"⚠️ Échec de l'arrêt : {message}"
     await ctx.send(content)
 
-    # Transfert dans le salon de logs (pas de fil pour un Arrêt).
     await log_forwarding.forward_action_message(
         bot, content=content, script_name=script_name, create_thread=False,
     )
@@ -433,6 +423,24 @@ async def mention_command(ctx: commands.Context):
     embed = build_mention_embed()
     view = MentionManagerView()
     await ctx.send(embed=embed, view=view)
+
+
+@bot.hybrid_command(
+    name="vikidia_status",
+    description="Vérifie la santé des connexions API et la détection des types de sources surveillées",
+)
+async def vikidia_status(ctx: commands.Context):
+    await _delete_invoking_message(ctx)
+    await ctx.defer()
+
+    total_ok, total_sources, results = await vikidia_watcher.get_status_report()
+    color = discord.Color.green() if total_ok == total_sources else discord.Color.orange()
+    embed = discord.Embed(
+        title="🔎 Rapport de santé — Veille Vikidia",
+        description=f"**{total_ok}/{total_sources}** sources vérifiées avec succès.\n\n" + "\n".join(results),
+        color=color,
+    )
+    await ctx.send(embed=embed)
 
 
 @bot.event
