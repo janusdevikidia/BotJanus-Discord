@@ -61,6 +61,22 @@ async def get_service_logs(after: str | int = "latest", limit: int = 500) -> dic
         return None
 
 
+async def get_service_events(after: str | int = "latest", limit: int = 50) -> dict | None:
+    """Ordres start/stop/restart terminés des scripts continus (curseur `after` = id du dernier
+    ordre vu, ou "latest" pour obtenir seulement le curseur courant). None si injoignable."""
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.get(
+                f"{FLASK_API_URL}/api/services/events", headers=HEADERS,
+                params={"after": after, "limit": limit},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.json()
+    except Exception:
+        return None
+
+
 async def start_script(choice: str, username: str, extra: dict | None = None) -> tuple[bool, str]:
     payload = {"choice": choice, "username": username}
     if extra:

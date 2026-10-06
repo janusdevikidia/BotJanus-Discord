@@ -291,3 +291,99 @@ async def poll_service_logs(client: discord.Client) -> None:
         db.set_service_log_cursor(cursor)
         if len(lines) < 500:
             return
+
+
+
+# --- Embeds start / restart / stop des scripts "en continu" -------------------------------
+
+# action -> (couleur, emoji, titre si réussi, titre si échec)
+_EVENT_STYLE = {
+    "start":   (0x2ECC71, "🟢", "Script démarré",    "Échec du démarrage"),
+    "stop":    (0xE74C3C, "🔴", "Script arrêté",     "Échec de l'arrêt"),
+    "restart": (0x3498DB, "🔄", "Script redémarré",  "Échec du redémarrage"),
+}
+_ACTION_VERB = {"start": "le démarrage", "stop": "l'arrêt", "restart": "le redémarrage"}
+_COLOR_FAILED = 0x992D22
+_COLOR_EXPIRED = 0xF1C40F
+
+
+def build_service_event_embed(event: dict) -> discord.Embed:
+    """Construit l'embed d'un ordre start/stop/restart terminé (réussi, échoué ou expiré)."""
+    action = str(event.get("action") or "?")
+    status = str(event.get("status") or "?")
+    label = str(event.get("label") or event.get("service") or "?")
+    color, emoji, title_ok, title_ko = _EVENT_STYLE.get(action, (0x95A5A6, "⚙️", f"Ordre « {action} »", "Échec de l'ordre"))
+    verb = _ACTION_VERB.get(action, f"l'ordre « {action} »")
+    result = str(event.get("result") or "").strip()
+
+    if status == "done":
+        title = f"{emoji} {title_ok}"
+        description = f"**{label}**"
+        if result:
+            description += f"\n> {result[:300]}"
+    elif status == "failed":
+        color, title = _COLOR_FAILED, f"❌ {title_ko}"
+        description = f"**{label}** — {verb} a échoué."
+        if result:
+            description += f"\n```\n{result[:300]}\n```"
+    else:  # expired
+        color, title = _COLOR_EXPIRED, "⏳ Ordre expiré"
+        description = f"**{label}** — {verb} n'a pas pu être confirmé par l'agent."
+        if result:
+            description += f"\n> {result[:300]}"
+
+    done_at = float(event.get("done_at") or event.get("requested_at") or 0)
+    requested_at = float(event.get("requested_at") or done_at)
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=datetime.fromtimestamp(done_at, tz=timezone.utc) if done_at else discord.utils.utcnow(),
+    )
+    embed.add_field(name="Script", value=f"`{event.get('service') or '?'}`", inline=True)
+    embed.add_field(name="Demandé par", value=str(event.get("requested_by") or "—"), inline=True)
+    if status == "done":
+        embed.add_field(name="Traité en", value=_format_duration(done_at - requested_at), inline=True)
+    embed.set_footer(text="BotJanus • Scripts continus")
+    return embed
+
+
+async def poll_service_events(client: discord.Client) -> None:
+    """À appeler régulièrement : annonce par un embed chaque ordre start/stop/restart terminé
+    sur un script continu, dans SERVICE_LOG_CHANNEL_ID. Même principe que les logs : curseur
+    dans la base du bot, pas de rejeu de l'historique au premier démarrage."""
+    if SERVICE_LOG_CHANNEL_ID is None:
+        return
+
+    cursor = db.get_service_event_cursor()
+    if cursor is None:
+        data = await api_client.get_service_events("latest")
+        if data is not None:
+            db.set_service_event_cursor(int(data.get("last_id", 0)))
+        return
+
+    channel = await _get_service_log_channel(client)
+    if channel is None:
+        return
+
+    for _ in range(10):
+        data = await api_client.get_service_events(cursor)
+        if data is None:
+            return
+        if data.get("reset"):
+            db.set_service_event_cursor(int(data.get("last_id", 0)))
+            return
+        events = data.get("events") or []
+        if not events:
+            return
+
+        for event in events:
+            try:
+                await channel.send(embed=build_service_event_embed(event))
+            except discord.HTTPException as e:
+                log.error("Échec de l'envoi de l'embed d'événement continu : %s", e)
+                return  # curseur non avancé sur cet événement : renvoyé au prochain sondage
+            cursor = int(event["id"])
+            db.set_service_event_cursor(cursor)
+        if len(events) < 50:
+            return

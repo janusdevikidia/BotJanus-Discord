@@ -100,6 +100,25 @@ def set_service_log_cursor(cursor: int) -> None:
         conn.commit()
 
 
+# --- Curseur des événements (start/stop/restart) des scripts continus ---
+
+SERVICE_EVENT_CURSOR_KEY = "service_event_cursor"
+
+
+def get_service_event_cursor() -> int | None:
+    """Id du dernier ordre continu déjà annoncé, ou None au tout premier démarrage."""
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (SERVICE_EVENT_CURSOR_KEY,)).fetchone()
+        return int(row["value"]) if row else None
+
+
+def set_service_event_cursor(cursor: int) -> None:
+    with _connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                     (SERVICE_EVENT_CURSOR_KEY, str(cursor)))
+        conn.commit()
+
+
 # --- Verrou de lancement ---
 # NOTE : ce verrou est local au robot Discord et distinct du verrou "lock_launch" du
 # dashboard web (table settings côté Flask). Les deux ne sont volontairement pas unifiés

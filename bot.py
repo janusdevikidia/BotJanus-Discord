@@ -109,6 +109,11 @@ async def refresh_log_threads():
 @tasks.loop(seconds=SERVICE_LOG_POLL_SECONDS)
 async def refresh_service_logs():
     """Relaie dans SERVICE_LOG_CHANNEL_ID les logs des scripts continus (via le dashboard)."""
+    # Embeds start/stop/restart d'abord, puis les lignes de logs.
+    try:
+        await log_forwarding.poll_service_events(bot)
+    except Exception:
+        log.exception("Erreur lors de l'annonce des événements continus.")
     try:
         await log_forwarding.poll_service_logs(bot)
     except Exception:
