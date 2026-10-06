@@ -7,7 +7,7 @@ import discord
 
 import api_client
 import database as db
-from config import LOG_GUILD_ID, LOG_CHANNEL_ID
+from config import LOG_GUILD_ID, LOG_CHANNEL_ID, SERVICE_LOG_GUILD_ID, SERVICE_LOG_CHANNEL_ID
 
 log = logging.getLogger("botjanus_discord")
 
@@ -212,3 +212,82 @@ async def cleanup_old_threads(client: discord.Client) -> None:
                 log.error("Échec de la suppression du fil %s : %s", entry["thread_id"], e)
 
         db.remove_log_thread(entry["thread_id"])
+
+
+# --- Logs des scripts "en continu" (serveur distant) ---------------------------------
+# agent -> dashboard (/api/agent/sync) -> /api/services/logs -> ce bot -> salon SERVICE_LOG_CHANNEL_ID
+
+async def _get_service_log_channel(client: discord.Client) -> discord.abc.Messageable | None:
+    if SERVICE_LOG_CHANNEL_ID is None:
+        return None
+    channel = client.get_channel(SERVICE_LOG_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(SERVICE_LOG_CHANNEL_ID)
+        except discord.HTTPException:
+            log.warning("Impossible de récupérer le salon des logs continus (SERVICE_LOG_CHANNEL_ID=%s).",
+                        SERVICE_LOG_CHANNEL_ID)
+            return None
+    if SERVICE_LOG_GUILD_ID is not None and getattr(channel, "guild", None) \
+            and channel.guild.id != SERVICE_LOG_GUILD_ID:
+        log.warning("Le salon SERVICE_LOG_CHANNEL_ID n'appartient pas au serveur SERVICE_LOG_GUILD_ID configuré.")
+        return None
+    return channel
+
+
+async def poll_service_logs(client: discord.Client) -> None:
+    """À appeler régulièrement : récupère auprès du dashboard les nouvelles lignes de logs des
+    scripts continus et les poste dans le salon SERVICE_LOG_CHANNEL_ID, groupées par script.
+    Le curseur (id de la dernière ligne postée) est conservé dans la base du bot : un
+    redémarrage ne rejoue rien et ne perd rien. Au tout premier démarrage on repart du
+    présent (pas de rejeu de l'historique)."""
+    if SERVICE_LOG_CHANNEL_ID is None:
+        return
+
+    cursor = db.get_service_log_cursor()
+    if cursor is None:
+        data = await api_client.get_service_logs("latest")
+        if data is not None:
+            db.set_service_log_cursor(int(data.get("last_id", 0)))
+        return
+
+    channel = await _get_service_log_channel(client)
+    if channel is None:
+        return
+
+    # On boucle tant que le dashboard renvoie un lot plein (rattrapage après une coupure).
+    for _ in range(10):
+        data = await api_client.get_service_logs(cursor)
+        if data is None:
+            return  # dashboard injoignable : on retentera au prochain sondage
+        if data.get("reset"):
+            # le dashboard a été réinitialisé : notre curseur est au-delà de son dernier id
+            db.set_service_log_cursor(int(data.get("last_id", 0)))
+            return
+        lines = data.get("lines") or []
+        if not lines:
+            return
+
+        # Groupes consécutifs d'un même script : un en-tête + un bloc de code par groupe.
+        groups: list[tuple[str, list[str]]] = []
+        for item in lines:
+            label = str(item.get("label") or item.get("service") or "?")
+            text = str(item.get("line", "")).replace("```", "'''")
+            if groups and groups[-1][0] == label:
+                groups[-1][1].append(text)
+            else:
+                groups.append((label, [text]))
+
+        try:
+            for label, texts in groups:
+                for i, chunk in enumerate(_split_for_discord("\n".join(texts), limit=1800)):
+                    header = f"📡 **{label}**\n" if i == 0 else ""
+                    await channel.send(f"{header}```\n{chunk}\n```")
+        except discord.HTTPException as e:
+            log.error("Échec de l'envoi des logs continus dans le salon : %s", e)
+            return  # curseur non avancé : le lot sera renvoyé au prochain sondage
+
+        cursor = int(data.get("last_id", cursor))
+        db.set_service_log_cursor(cursor)
+        if len(lines) < 500:
+            return

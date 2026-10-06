@@ -40,6 +40,20 @@ LOG_GUILD_ID: int | None = int(_log_guild_id) if _log_guild_id else None
 _log_channel_id = os.environ.get("LOG_CHANNEL_ID")
 LOG_CHANNEL_ID: int | None = int(_log_channel_id) if _log_channel_id else None
 
+# --- Salon des logs des scripts "en continu" (serveur distant, via le dashboard) ---
+# Optionnel : si SERVICE_LOG_CHANNEL_ID n'est pas renseigné, ce transfert est désactivé.
+# Les lignes de logs des scripts continus transitent : agent -> dashboard -> ce bot -> ce salon.
+_service_log_guild_id = os.environ.get("SERVICE_LOG_GUILD_ID")
+SERVICE_LOG_GUILD_ID: int | None = int(_service_log_guild_id) if _service_log_guild_id else None
+
+_service_log_channel_id = os.environ.get("SERVICE_LOG_CHANNEL_ID")
+SERVICE_LOG_CHANNEL_ID: int | None = int(_service_log_channel_id) if _service_log_channel_id else None
+
+# Fréquence (secondes) de récupération des nouvelles lignes auprès du dashboard.
+# L'agent ne pousse ses logs au dashboard que toutes les ~30 s au repos : descendre
+# sous 15 s n'apporte rien et consomme du quota CPU côté hébergeur.
+SERVICE_LOG_POLL_SECONDS: int = int(os.environ.get("SERVICE_LOG_POLL_SECONDS", "15"))
+
 # --- Divers ---
 # Nom du script qui nécessite des paramètres supplémentaires (langue/catégorie/portail)
 PORTAL_SCRIPT_NAME: str = "portal.py"

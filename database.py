@@ -81,6 +81,25 @@ def _connect():
         conn.close()
 
 
+# --- Curseur des logs des scripts continus ---
+
+SERVICE_LOG_CURSOR_KEY = "service_log_cursor"
+
+
+def get_service_log_cursor() -> int | None:
+    """Id de la dernière ligne de log continue déjà postée, ou None au tout premier démarrage."""
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (SERVICE_LOG_CURSOR_KEY,)).fetchone()
+        return int(row["value"]) if row else None
+
+
+def set_service_log_cursor(cursor: int) -> None:
+    with _connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                     (SERVICE_LOG_CURSOR_KEY, str(cursor)))
+        conn.commit()
+
+
 # --- Verrou de lancement ---
 # NOTE : ce verrou est local au robot Discord et distinct du verrou "lock_launch" du
 # dashboard web (table settings côté Flask). Les deux ne sont volontairement pas unifiés

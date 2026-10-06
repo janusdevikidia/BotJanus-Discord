@@ -18,6 +18,8 @@ from config import (
     QUEUE_CHECK_SECONDS,
     VIKIDIA_WATCH_CHANNEL_ID,
     VIKIDIA_WATCH_INTERVAL_SECONDS,
+    SERVICE_LOG_CHANNEL_ID,
+    SERVICE_LOG_POLL_SECONDS,
 )
 import database as db
 import api_client
@@ -104,6 +106,15 @@ async def refresh_log_threads():
         log.info("Polling des logs ajusté à %ss (fil actif : %s).", target, has_active_thread)
 
 
+@tasks.loop(seconds=SERVICE_LOG_POLL_SECONDS)
+async def refresh_service_logs():
+    """Relaie dans SERVICE_LOG_CHANNEL_ID les logs des scripts continus (via le dashboard)."""
+    try:
+        await log_forwarding.poll_service_logs(bot)
+    except Exception:
+        log.exception("Erreur lors du relais des logs continus.")
+
+
 @tasks.loop(seconds=QUEUE_CHECK_SECONDS)
 async def process_queue():
     """Vérifie régulièrement si un script vient de se libérer pour dépiler et
@@ -139,6 +150,10 @@ async def on_ready():
 
     if not refresh_log_threads.is_running():
         refresh_log_threads.start()
+
+    if SERVICE_LOG_CHANNEL_ID and not refresh_service_logs.is_running():
+        refresh_service_logs.start()
+        log.info("Relais des logs continus démarré (toutes les %ss).", SERVICE_LOG_POLL_SECONDS)
 
     if not process_queue.is_running():
         process_queue.start()

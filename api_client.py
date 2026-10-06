@@ -45,6 +45,22 @@ async def get_logs(limit: int = 20) -> list[str] | None:
         return None
 
 
+async def get_service_logs(after: str | int = "latest", limit: int = 500) -> dict | None:
+    """Nouvelles lignes de logs des scripts continus (curseur `after` = id de la dernière
+    ligne vue, ou "latest" pour obtenir seulement le curseur courant). None si injoignable."""
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.get(
+                f"{FLASK_API_URL}/api/services/logs", headers=HEADERS,
+                params={"after": after, "limit": limit},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.json()
+    except Exception:
+        return None
+
+
 async def start_script(choice: str, username: str, extra: dict | None = None) -> tuple[bool, str]:
     payload = {"choice": choice, "username": username}
     if extra:
